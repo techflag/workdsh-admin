@@ -156,10 +156,14 @@ export function apply(ctx){
           turnEnds:events.filter(e=>e.type==='turn/end').length,
           errors:events.filter(e=>/error|fault/.test(e.type)).map(e=>e.type)});
       }
-      if(input.action==='begin-real-model-handoff'||input.action==='begin-real-model-analysis') {
+      if(input.action==='begin-real-model-handoff'||input.action==='begin-real-model-analysis'
+          ||input.action==='begin-real-model-reply') {
         const handoffRequested=input.action==='begin-real-model-handoff';
+        const replyRequested=input.action==='begin-real-model-reply';
         if(handoffRequested&&(typeof input.recipientEmail!=='string'||!input.recipientEmail.endsWith('@example.test')
           ||typeof input.summary!=='string'||input.summary.length>200)) throw new Error('Invalid real-model handoff');
+        if(replyRequested&&(typeof input.handoffId!=='string'||!/^[0-9a-f-]{36}$/.test(input.handoffId)))
+          throw new Error('Invalid real-model handoff reply');
         const created=await ctx.workdshSessionAccess.create({cwd:process.cwd()},request.signal);
         await ctx.sessionController.selectModel({sessionId:created.sessionId,provider:'deepseek-official',model:'deepseek-flash'});
         const resolved=await ctx.workdshSessionAccess.resolveAgent(created.sessionId,request.signal);
@@ -167,6 +171,9 @@ export function apply(ctx){
         const prompt=handoffRequested?'请把“'+input.summary+'”交接给同事 '+input.recipientEmail+'。这是我明确授权的发送操作。'
           +'先调用 workdsh_collaboration_colleagues，按邮箱核对接收人；再调用 workdsh_collaboration_send 发送一次。'
           +'不要猜测成员 ID，不要发给其他人。完成后简短告知结果。'
+          :replyRequested?'请处理同事交给我的事项 '+input.handoffId+'。这是我明确授权的完成和回执操作。'
+          +'先调用 workdsh_collaboration_inbox，找到这个 ID 的交接；核对 8 × 120 的计算结果，'
+          +'然后调用 workdsh_collaboration_complete，只完成这个 ID，并在回执中写明计算结果。不要发起新的交接。'
           :'请只分析 8 × 120 是否等于 960，并给我两条核对建议。这只是我自己查看的分析；不要联系同事，不要发送交接，也不要产生待办。';
         resolved.agent.followup(createMessage({role:'user',source:{kind:'user'},content:[{type:'text',text:prompt}]}));
         return Response.json({ok:true,sessionId:created.sessionId});
@@ -220,7 +227,7 @@ for (const number of [1, 2]) {
   for (const person of people) {
     const home = await mkdtemp(join(tmpdir(), 'workdsh-enterprise-instance-'));
     homes.push(home);
-    if (realModelProbe && person === people[0])
+    if (realModelProbe)
       await writeFile(join(home, '.credentials.yaml'), realModelCredentials, { mode: 0o600 });
     const env = {
       ...process.env, DSH_HOME: home, DSH_AGENTS_HOME: join(home, 'agents'),
@@ -498,9 +505,9 @@ for (const number of [1, 2]) {
     assert.equal((await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken }))[0].status, 'DONE');
     console.log('PASS: a native DSH Session calculates first, then sends the result to a colleague; the other member completes and the sender reads back, without an order.');
     if (realModelProbe) {
-      const runReal = async input => {
-        const started = await fetch(`${sender.origin}/api/enterprise-session-probe`, {
-          method: 'POST', headers: { cookie: sender.cookie, 'content-type': 'application/json' },
+      const runReal = async (host, input) => {
+        const started = await fetch(`${host.origin}/api/enterprise-session-probe`, {
+          method: 'POST', headers: { cookie: host.cookie, 'content-type': 'application/json' },
           body: JSON.stringify(input), signal: AbortSignal.timeout(15_000),
         });
         const beginning = await started.json();
@@ -508,8 +515,8 @@ for (const number of [1, 2]) {
         const deadline = Date.now() + 150_000;
         let status;
         while (Date.now() < deadline) {
-          const response = await fetch(`${sender.origin}/api/enterprise-session-probe`, {
-            method: 'POST', headers: { cookie: sender.cookie, 'content-type': 'application/json' },
+          const response = await fetch(`${host.origin}/api/enterprise-session-probe`, {
+            method: 'POST', headers: { cookie: host.cookie, 'content-type': 'application/json' },
             body: JSON.stringify({ action: 'real-model-status', sessionId: beginning.sessionId }),
             signal: AbortSignal.timeout(10_000),
           });
@@ -521,8 +528,8 @@ for (const number of [1, 2]) {
         assert.ok(status?.turnEnds > 0, `Real-model turn did not finish: ${JSON.stringify(status)}`);
         return status;
       };
-      const realSummary = `请复核协作验证 ${stamp}`;
-      const status = await runReal({ action: 'begin-real-model-handoff',
+      const realSummary = `请核对 8 × 120 的计算结果并回执，验证编号 ${stamp}`;
+      const status = await runReal(sender, { action: 'begin-real-model-handoff',
         recipientEmail: recipient.person.email, summary: realSummary });
       const colleaguesIndex = status.calledTools.indexOf('workdsh_collaboration_colleagues');
       const sendIndex = status.calledTools.indexOf('workdsh_collaboration_send');
@@ -532,13 +539,19 @@ for (const number of [1, 2]) {
       assert.equal(matching.length, 1, `Real-model handoff count: ${JSON.stringify(status)}`);
       const [handoff] = matching;
       assert.equal(handoff.recipientId, recipient.person.id);
-      await nativeCall(recipient, 'workdsh_collaboration_complete', {
-        handoff_id: handoff.id, resolution: '真实模型交接已收到',
-      }, '真实模型交接已收到');
-      await nativeCall(sender, 'workdsh_collaboration_sent', {}, '真实模型交接已收到');
-      console.log('PASS: the real DeepSeek model looked up the colleague by email, sent one handoff, and received a completed result.');
+      const replyStatus = await runReal(recipient, { action: 'begin-real-model-reply', handoffId: handoff.id });
+      const inboxIndex = replyStatus.calledTools.indexOf('workdsh_collaboration_inbox');
+      const completeIndex = replyStatus.calledTools.indexOf('workdsh_collaboration_complete');
+      assert.ok(inboxIndex >= 0 && completeIndex > inboxIndex, JSON.stringify(replyStatus));
+      assert.ok(!replyStatus.calledTools.includes('workdsh_collaboration_send'), JSON.stringify(replyStatus));
+      const completed = (await request('/api/collaboration/inbox', { runtime: recipient.person.runtimeToken }))
+        .find(row => row.id === handoff.id);
+      assert.equal(completed?.status, 'DONE', JSON.stringify(replyStatus));
+      assert.match(completed.resolution, /960/);
+      await nativeCall(sender, 'workdsh_collaboration_sent', {}, '960');
+      console.log('PASS: two real DeepSeek sessions on separate DSH Hosts sent, processed and completed one handoff.');
       const beforeAnalysis = (await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken })).length;
-      const analysis = await runReal({ action: 'begin-real-model-analysis' });
+      const analysis = await runReal(sender, { action: 'begin-real-model-analysis' });
       assert.ok(!analysis.calledTools.includes('workdsh_collaboration_send'), JSON.stringify(analysis));
       assert.equal((await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken })).length,
         beforeAnalysis, 'Analysis-only request must not create a handoff');
