@@ -65,6 +65,9 @@ class CollaborationFlowTest {
         String id = handoff.path("id").asText();
         assertEquals(aId, handoff.path("senderId").asText());
         assertEquals("OPEN", handoff.path("status").asText());
+        assertFalse(handoff.path("needsReply").asBoolean());
+        assertTrue(call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200)
+                .findValuesAsText("id").contains(id));
         assertEquals(id, call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
                 .contentType(MediaType.APPLICATION_JSON).content(body), 201).path("id").asText());
         String concurrentBody = json.writeValueAsString(Map.of("recipientId", bId,
@@ -108,6 +111,11 @@ class CollaborationFlowTest {
         JsonNode asked = call(post("/api/collaboration/handoffs/" + id + "/messages")
                 .header("Authorization", "Runtime " + bRuntime).contentType(MediaType.APPLICATION_JSON).content(question), 201);
         assertEquals(bId, asked.path("authorId").asText());
+        assertTrue(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200).findValuesAsText("id").contains(id));
+        assertTrue(findHandoff(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200), id)
+                .path("needsReply").asBoolean(), "a question from B must flag A's sent handoff for reply");
+        assertFalse(findHandoff(call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200), id)
+                .path("needsReply").asBoolean(), "B should not be asked to answer their own question");
         assertEquals(asked.path("id").asText(), call(post("/api/collaboration/handoffs/" + id + "/messages")
                 .header("Authorization", bearer(b)).contentType(MediaType.APPLICATION_JSON).content(question), 201)
                 .path("id").asText(), "network retry must not create a second question");
@@ -116,6 +124,10 @@ class CollaborationFlowTest {
         call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(a))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"content\":\"8 × 120 = 960，来源为本次计算\",\"requestKey\":\"answer-1\"}"), 201);
+        assertTrue(findHandoff(call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200), id)
+                .path("needsReply").asBoolean(), "A's answer makes the next action B's");
+        assertFalse(findHandoff(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200), id)
+                .path("needsReply").asBoolean());
         JsonNode thread = call(get("/api/collaboration/handoffs/" + id + "/messages")
                 .header("Authorization", "Runtime " + bRuntime), 200);
         assertEquals(2, thread.size());
@@ -133,6 +145,7 @@ class CollaborationFlowTest {
         JsonNode done = call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", "Runtime " + bRuntime)
                 .contentType(MediaType.APPLICATION_JSON).content(complete), 200);
         assertEquals("DONE", done.path("status").asText());
+        assertFalse(done.path("needsReply").asBoolean());
         assertEquals("已核对，两处需修改", call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200)
                 .get(0).path("resolution").asText());
         JsonNode retry = call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
@@ -180,6 +193,10 @@ class CollaborationFlowTest {
     private void changePassword(String token, String oldPassword, String newPassword) throws Exception {
         call(post("/api/auth/change-password").header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("currentPassword", oldPassword, "newPassword", newPassword))), 204);
+    }
+    private JsonNode findHandoff(JsonNode rows, String id) {
+        for (JsonNode row : rows) if (id.equals(row.path("id").asText())) return row;
+        throw new AssertionError("Handoff not found: " + id);
     }
     private String login(String email, String password) throws Exception {
         return call(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)

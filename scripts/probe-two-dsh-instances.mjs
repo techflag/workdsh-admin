@@ -438,7 +438,7 @@ for (const number of [1, 2]) {
         assert.ok(entry, `${name} must appear in the official plugin inventory`);
         assert.equal(String(entry.phase).toUpperCase(), 'ACTIVE', `${name} Fiber must be ACTIVE`);
       }
-      await page.getByLabel('1 项待处理交接').waitFor({ timeout: 15_000 });
+      await page.getByLabel('1 项待回应协作').waitFor({ timeout: 15_000 });
       await page.getByText('协作交接', { exact: true }).first().click({ timeout: 15_000 });
       await page.getByTestId('workdsh-collaboration').getByText(summary).waitFor({ timeout: 15_000 });
       assert.equal(await page.getByRole('combobox', { name: '接收人' })
@@ -468,14 +468,17 @@ for (const number of [1, 2]) {
       await reply.getByRole('button', { name: '查看讨论 / 追问' }).click();
       await reply.getByRole('textbox', { name: /补充消息/ }).fill('请补充计算依据');
       await reply.getByRole('button', { name: '发送消息' }).click();
+      await senderPage.getByLabel('1 项待回应协作').waitFor({ state: 'hidden', timeout: 12_000 });
       await page.getByRole('button', { name: '刷新' }).click();
       const sentRow = page.getByTestId('workdsh-collaboration').locator('article').filter({ hasText: uiSummary });
       await sentRow.getByRole('button', { name: '查看讨论 / 追问' }).click();
       await sentRow.getByText('请补充计算依据').waitFor();
+      await page.getByLabel('2 项待回应协作').waitFor({ timeout: 12_000 });
       await sentRow.getByRole('textbox', { name: /补充消息/ }).fill('8 × 120 = 960，来自本次计算');
       await sentRow.getByRole('button', { name: '发送消息' }).click();
       await senderPage.getByRole('button', { name: '刷新' }).click();
       await reply.getByText('8 × 120 = 960，来自本次计算').waitFor();
+      await senderPage.getByLabel('1 项待回应协作').waitFor({ timeout: 12_000 });
       await reply.getByRole('textbox', { name: /回执/ }).fill('review-done');
       await reply.getByRole('button', { name: '完成并回执' }).click({ timeout: 5_000 }).catch(async error => {
         throw new Error(`${error.message}\nBody: ${(await senderPage.locator('body').innerText()).slice(-900)}\nErrors: ${senderErrors.join(' | ')}`);
@@ -483,7 +486,7 @@ for (const number of [1, 2]) {
       await senderPage.getByText('已完成并回执').waitFor({ timeout: 8_000 });
       assert.equal((await request('/api/collaboration/inbox', { runtime: sender.person.runtimeToken }))
         .find(row => row.summary === uiSummary)?.resolution, 'review-done');
-      await senderPage.getByLabel('1 项待处理交接').waitFor({ state: 'hidden', timeout: 8_000 });
+      await senderPage.getByLabel('1 项待回应协作').waitFor({ state: 'hidden', timeout: 8_000 });
       await page.getByRole('button', { name: '刷新' }).click();
       await page.getByTestId('workdsh-collaboration').getByText('回执：review-done').waitFor({ timeout: 8_000 });
       await senderContext.close();
@@ -528,7 +531,7 @@ for (const number of [1, 2]) {
       await recipientPopup.waitForURL(url => url.origin === gatewayOrigin);
       for (const name of ['Continue', 'Configure later'])
         await recipientPopup.getByRole('button', { name, exact: true }).click({ timeout: 2_000 }).catch(() => {});
-      await recipientPopup.getByLabel('1 项待处理交接').waitFor({ timeout: 15_000 });
+      await recipientPopup.getByLabel('1 项待回应协作').waitFor({ timeout: 15_000 });
       await recipientPopup.getByText('协作交接', { exact: true }).first().click();
       await recipientPopup.getByTestId('workdsh-collaboration').getByText(summary).waitFor({ timeout: 15_000 });
       await recipientGatewayContext.close(); recipientGatewayContext = undefined;

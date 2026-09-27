@@ -45,11 +45,13 @@ let inboxPolling = false
 let knownInboxIds = new Set()
 let knownHandoffIds = new Set()
 let knownSentStatuses = new Map()
+let knownInboxReplyState = new Map()
 let knownOrderStatuses = new Map()
 let authEpoch = 0
 sessionStorage.removeItem('workdsh-admin-token')
 
 const isAdmin = computed(() => me.value?.role === 'OWNER' || me.value?.role === 'ADMIN')
+const needsReply = (item, side) => item.needsReply ?? (side === 'inbox' && item.status === 'OPEN')
 const returnedCount = computed(() => orders.value.filter(item => item.creatorId === me.value?.id && item.status === 'CHANGES_REQUESTED').length)
 const nav = computed(() => [
   { id: 'overview', label: '组织概览' },
@@ -124,7 +126,8 @@ async function load() {
     handoffInbox.value = results[4]
     handoffSent.value = results[5]
     knownHandoffIds = new Set(handoffInbox.value.map(item => item.id))
-    knownSentStatuses = new Map(handoffSent.value.map(item => [item.id, item.status]))
+    knownSentStatuses = new Map(handoffSent.value.map(item => [item.id, { status: item.status, needsReply: needsReply(item, 'sent') }]))
+    knownInboxReplyState = new Map(handoffInbox.value.map(item => [item.id, needsReply(item, 'inbox')]))
     knownInboxIds = new Set(inbox.value.map(item => item.id))
     audits.value = isAdmin.value ? results[8] : []
     if (isAdmin.value) adminOrders.value = results[7]
@@ -143,20 +146,25 @@ async function pollInbox() {
       && item.status === 'CHANGES_REQUESTED' && knownOrderStatuses.get(item.id) !== 'CHANGES_REQUESTED')
     inbox.value = latest
     const newHandoffs = latestHandoffs.filter(item => !knownHandoffIds.has(item.id))
-    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id) !== 'DONE')
+    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id)?.status !== 'DONE')
+    const newQuestions = latestSent.filter(item => needsReply(item, 'sent') && !knownSentStatuses.get(item.id)?.needsReply)
+    const newAnswers = latestHandoffs.filter(item => knownHandoffIds.has(item.id) && needsReply(item, 'inbox')
+      && !knownInboxReplyState.get(item.id))
     handoffInbox.value = latestHandoffs
     handoffSent.value = latestSent
     if (page.value === 'handoffs' && openThreadId.value) {
       threadMessages.value = await api(`/collaboration/handoffs/${openThreadId.value}/messages`)
     }
     knownHandoffIds = new Set(latestHandoffs.map(item => item.id))
-    knownSentStatuses = new Map(latestSent.map(item => [item.id, item.status]))
+    knownSentStatuses = new Map(latestSent.map(item => [item.id, { status: item.status, needsReply: needsReply(item, 'sent') }]))
+    knownInboxReplyState = new Map(latestHandoffs.map(item => [item.id, needsReply(item, 'inbox')]))
     orders.value = latestOrders
     knownInboxIds = new Set(latest.map(item => item.id))
     knownOrderStatuses = new Map(latestOrders.map(item => [item.id, item.status]))
     if (newlyAssigned.length) Message.info(`收到 ${newlyAssigned.length} 项新复核待办`)
     if (newHandoffs.length) Message.info(`收到 ${newHandoffs.length} 条同事交接`)
     if (newReplies.length) Message.success(`收到 ${newReplies.length} 条同事回执`)
+    if (newQuestions.length + newAnswers.length) Message.info(`有 ${newQuestions.length + newAnswers.length} 条协作消息待回应`)
     if (newlyReturned.length) Message.warning(`有 ${newlyReturned.length} 项订单被退回，请刷新详情`)
   } catch (e) {
     if (e.status === 401) {
@@ -176,6 +184,7 @@ function stopInboxPolling() {
   knownInboxIds = new Set()
   knownHandoffIds = new Set()
   knownSentStatuses = new Map()
+  knownInboxReplyState = new Map()
   knownOrderStatuses = new Map()
 }
 async function refresh() { await load(); if (order.value) await openOrder(order.value.id) }
@@ -223,7 +232,8 @@ async function sendThreadMessage() {
     Message.success('已发给同事')
   } catch (e) { tell(e) } finally { threadBusy.value = false }
 }
-const openHandoffCount = computed(() => handoffInbox.value.filter(item => item.status === 'OPEN').length)
+const openHandoffCount = computed(() => handoffInbox.value.filter(item => needsReply(item, 'inbox')).length
+  + handoffSent.value.filter(item => needsReply(item, 'sent')).length)
 const adminOrders = ref([])
 async function navigate(id) { page.value = id; order.value = null; reviewEvents.value = []; orderSources.value = []; sourcePreview.value = null; await load() }
 async function openOrder(id) {
@@ -396,7 +406,7 @@ onUnmounted(stopInboxPolling)
       </template>
 
       <template v-else-if="page==='overview'">
-        <div class="stats"><div class="panel"><div class="muted">有效成员</div><div class="stat-value">{{ members.filter(x=>x.active).length }}</div></div><div class="panel"><div class="muted">待我处理的交接</div><div class="stat-value">{{ openHandoffCount }}</div></div><div class="panel"><div class="muted">我发出的交接</div><div class="stat-value">{{ handoffSent.length }}</div></div></div>
+        <div class="stats"><div class="panel"><div class="muted">有效成员</div><div class="stat-value">{{ members.filter(x=>x.active).length }}</div></div><div class="panel"><div class="muted">待我回应的协作</div><div class="stat-value">{{ openHandoffCount }}</div></div><div class="panel"><div class="muted">我发出的交接</div><div class="stat-value">{{ handoffSent.length }}</div></div></div>
         <div class="section-head"><h2>协作入口</h2></div><div class="panel"><p>在自己的 DSH 实例里分析问题并 @ 同事；对方在自己的实例或这里接收待办、回执结果。订单只是可选示例，不是协作的前提。</p><div class="actions"><a-button type="primary" @click="openDsh">打开我的 DSH</a-button><a-button @click="navigate('handoffs')">查看协作交接</a-button></div></div>
       </template>
 
@@ -410,7 +420,7 @@ onUnmounted(stopInboxPolling)
         </div>
         <div class="section-head" style="margin-top:28px"><h2>待我处理</h2></div>
         <div class="panel"><p v-if="!handoffInbox.length" class="muted">暂无同事交接。</p>
-          <div v-for="item in handoffInbox" :key="item.id" class="review-event"><b>{{ item.senderName }} → 我</b> <a-tag :color="item.status==='OPEN'?'orange':'green'">{{ item.status==='OPEN'?'待处理':'已完成' }}</a-tag>
+          <div v-for="item in handoffInbox" :key="item.id" class="review-event"><b>{{ item.senderName }} → 我</b> <a-tag :color="needsReply(item,'inbox')?'orange':item.status==='OPEN'?'blue':'green'">{{ needsReply(item,'inbox')?'待你回应':item.status==='OPEN'?'等待同事':'已完成' }}</a-tag>
             <p>{{ item.summary }}</p><p class="muted">{{ item.createdAt }}</p>
             <p v-if="item.status==='DONE'">处理结果：{{ item.resolution }}</p>
             <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 追问' }}</a-button>
@@ -420,7 +430,7 @@ onUnmounted(stopInboxPolling)
         </div>
         <div class="section-head" style="margin-top:28px"><h2>我发出的交接</h2></div>
         <div class="panel"><p v-if="!handoffSent.length" class="muted">尚未发出交接。</p>
-          <div v-for="item in handoffSent" :key="item.id" class="review-event"><b>我 → {{ item.recipientName }}</b> <a-tag :color="item.status==='OPEN'?'orange':'green'">{{ item.status==='OPEN'?'等待同事':'已回执' }}</a-tag><p>{{ item.summary }}</p><p v-if="item.resolution">结果：{{ item.resolution }}</p>
+          <div v-for="item in handoffSent" :key="item.id" class="review-event"><b>我 → {{ item.recipientName }}</b> <a-tag :color="needsReply(item,'sent')?'orange':item.status==='OPEN'?'blue':'green'">{{ needsReply(item,'sent')?'待你回应':item.status==='OPEN'?'等待同事':'已回执' }}</a-tag><p>{{ item.summary }}</p><p v-if="item.resolution">结果：{{ item.resolution }}</p>
             <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 补充' }}</a-button>
             <div v-if="openThreadId===item.id" class="handoff-thread"><p v-if="!threadMessages.length" class="muted">暂无补充消息。</p><p v-for="message in threadMessages" :key="message.id"><b>{{ message.authorId===me.id?'我':message.authorName }}：</b>{{ message.content }}</p><div v-if="item.status==='OPEN'" class="actions"><a-input v-model="threadDraft" :max-length="2000" placeholder="回答同事的问题或补充信息" style="max-width:520px"/><a-button :loading="threadBusy" @click="sendThreadMessage">发送消息</a-button></div></div>
           </div>

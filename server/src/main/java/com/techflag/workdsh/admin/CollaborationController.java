@@ -29,7 +29,7 @@ public class CollaborationController {
     public record Colleague(String id, String displayName, String email) {}
     public record Handoff(String id, String senderId, String senderName, String recipientId,
                           String recipientName, String summary, String status, String resolution,
-                          Instant createdAt, Instant completedAt) {}
+                          Instant createdAt, Instant completedAt, Instant lastMessageAt, boolean needsReply) {}
     public record NewHandoff(@NotBlank String recipientId,
                              @NotBlank @Size(max=2000) String summary,
                              @NotBlank @Size(max=128) String requestKey) {}
@@ -166,30 +166,39 @@ public class CollaborationController {
                 : activity + " desc, h.created_at desc";
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
-                       h.summary,h.status,h.resolution,h.created_at,h.completed_at
+                       h.summary,h.status,h.resolution,h.created_at,h.completed_at,
+                       (select max(m.created_at) from collaboration_messages m where m.handoff_id=h.id) as last_message_at,
+                       (select m.author_id from collaboration_messages m where m.handoff_id=h.id order by m.created_at desc,m.id desc limit 1) as last_message_author_id
                 from collaboration_handoffs h
                 join members s on s.id=h.sender_id join members r on r.id=h.recipient_id
                 where h.organization_id=? and """ + " " + side + " order by " + ordering + " limit 100",
-                (rs,n) -> handoff(rs), actor.organizationId(), actor.id());
+                (rs,n) -> handoff(rs, actor.id()), actor.organizationId(), actor.id());
     }
 
     private Handoff one(String id, AuthService.Actor actor) {
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
-                       h.summary,h.status,h.resolution,h.created_at,h.completed_at
+                       h.summary,h.status,h.resolution,h.created_at,h.completed_at,
+                       (select max(m.created_at) from collaboration_messages m where m.handoff_id=h.id) as last_message_at,
+                       (select m.author_id from collaboration_messages m where m.handoff_id=h.id order by m.created_at desc,m.id desc limit 1) as last_message_author_id
                 from collaboration_handoffs h
                 join members s on s.id=h.sender_id join members r on r.id=h.recipient_id
                 where h.id=? and h.organization_id=? and (h.sender_id=? or h.recipient_id=?)
-                """, (rs,n) -> handoff(rs), id, actor.organizationId(), actor.id(), actor.id())
+                """, (rs,n) -> handoff(rs, actor.id()), id, actor.organizationId(), actor.id(), actor.id())
                 .stream().findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Handoff not found"));
     }
 
-    private Handoff handoff(java.sql.ResultSet rs) throws java.sql.SQLException {
+    private Handoff handoff(java.sql.ResultSet rs, String actorId) throws java.sql.SQLException {
         Timestamp completed = rs.getTimestamp("completed_at");
+        Timestamp lastMessage = rs.getTimestamp("last_message_at");
+        String lastAuthor = rs.getString("last_message_author_id");
+        boolean needsReply = "OPEN".equals(rs.getString("status"))
+                && (lastAuthor == null ? actorId.equals(rs.getString("recipient_id")) : !actorId.equals(lastAuthor));
         return new Handoff(rs.getString("id"), rs.getString("sender_id"), rs.getString("sender_name"),
                 rs.getString("recipient_id"), rs.getString("recipient_name"), rs.getString("summary"),
                 rs.getString("status"), rs.getString("resolution"), rs.getTimestamp("created_at").toInstant(),
-                completed == null ? null : completed.toInstant());
+                completed == null ? null : completed.toInstant(),
+                lastMessage == null ? null : lastMessage.toInstant(), needsReply);
     }
 
     private MessageEntry oneMessage(String id) {
