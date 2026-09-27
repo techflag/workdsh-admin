@@ -27,6 +27,8 @@ DSH 插件在启动及每次 `resolve` 时向该端点核验；服务不可用�
 
 通用成员交接也走同一身份边界。`GET /api/collaboration/colleagues` 只返回同组织有效成员的 ID、姓名和邮箱，用邮箱区分重名成员；`POST /api/collaboration/handoffs` 由服务端从凭据确定发送人，接收人必须是同组织的另一名有效成员。`GET /api/collaboration/inbox` 与 `/sent` 仅返回当前成员接收或发出的记录；只有接收人能调用 `POST /api/collaboration/handoffs/{id}/complete` 回执。发送携带同一工具调用的 `requestKey` 去重。它不复制或开放任何 DSH Session，也不要求创建订单。
 
+协作接口另有独立的版本检查：已就绪的成员使用相同 `Bearer` 或 `Runtime` 凭据请求 `GET /api/collaboration/contract`，成功响应为 `{ "contractVersion": 1 }`。未登录、首次登录未改密或成员失效时不能取得契约。DSH 协作插件每次操作先核对该版本；缺失、不可用或不是 v1 时拒绝读写，尤其不能先写交接再发现响应不兼容。身份契约与协作契约分别升级，并由双实例探针验证服务端和插件配套。
+
 管理员的 Web 登录 token 与 DSH 实例凭据是不同用途的秘密。Web token 不能提交到实例身份端点，实例凭据不能作为管理员登录凭据。默认 WorkDSH 本地 Profile 仍使用 `identity-local`；企业 Profile 必须只加载 `identity-enterprise`，并为每名成员使用独立 Profile/数据目录。多实例演示不等于多人公网入口、共享文件或代码执行已隔离，相关验收完成前不得开放。
 
 订单业务接口接受该成员的 `Runtime <instance-secret>`，每次由服务端重新查有效成员并执行订单 ACL；成员管理、组织审计和后台订单授权接口只接受管理员的网页登录 `Bearer` 凭据。DSH 订单工具在查询前还会比较身份提供方解析的主体与实例凭据对应的主体，拒绝两份插件配置串号。订单原件由创建人在草稿或退回状态上传，数据库保存字节、摘要和上传者；授权成员可列出及下载原件。Excel 原件可生成只读表格行建议，创建人逐行采用后，订单行记录原件 ID 与工作表行定位。提交复核必须先有原件及至少一条订单行。当前 DSH 工具只读，创建、上传、采用建议、提交与复核由网页操作。

@@ -45,6 +45,8 @@ class CollaborationFlowTest {
         String bId = createdB.path("member").path("id").asText();
         String aFirst = login("collab-a@example.test", createdA.path("temporaryPassword").asText());
         String bFirst = login("collab-b@example.test", createdB.path("temporaryPassword").asText());
+        call(get("/api/collaboration/contract"), 401);
+        call(get("/api/collaboration/contract").header("Authorization", bearer(bFirst)), 403);
         call(get("/api/collaboration/inbox").header("Authorization", bearer(bFirst)), 403);
         changePassword(aFirst, createdA.path("temporaryPassword").asText(), "MemberANewPassword123!");
         changePassword(bFirst, createdB.path("temporaryPassword").asText(), "MemberBNewPassword123!");
@@ -54,6 +56,8 @@ class CollaborationFlowTest {
                 .header("Authorization", bearer(admin)), 200).path("runtimeToken").asText();
         String bRuntime = call(post("/api/admin/members/" + bId + "/runtime-credential")
                 .header("Authorization", bearer(admin)), 200).path("runtimeToken").asText();
+        assertEquals(1, call(get("/api/collaboration/contract")
+                .header("Authorization", "Runtime " + aRuntime), 200).path("contractVersion").asInt());
 
         JsonNode colleagues = call(get("/api/collaboration/colleagues").header("Authorization", "Runtime " + aRuntime), 200);
         assertTrue(colleagues.findValuesAsText("id").contains(bId));

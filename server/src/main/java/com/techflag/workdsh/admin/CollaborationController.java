@@ -38,6 +38,13 @@ public class CollaborationController {
                                String content, Instant createdAt) {}
     public record NewMessage(@NotBlank @Size(max=2000) String content,
                              @NotBlank @Size(max=128) String requestKey) {}
+    public record Contract(int contractVersion) {}
+
+    @GetMapping("/contract")
+    public Contract contract(@RequestHeader(value="Authorization", required=false) String authorization) {
+        ready(authorization);
+        return new Contract(1);
+    }
 
     @GetMapping("/colleagues")
     public List<Colleague> colleagues(@RequestHeader(value="Authorization", required=false) String authorization) {
