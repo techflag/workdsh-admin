@@ -25,6 +25,12 @@ const gatewayProbe = process.env.WORKDSH_PROBE_GATEWAY === '1';
 const collaborationProbe = process.env.WORKDSH_PROBE_COLLABORATION === '1';
 const demoProbe = process.env.WORKDSH_PROBE_DEMO === '1';
 const realModelProbe = process.env.WORKDSH_PROBE_REAL_MODEL === '1';
+let stopRequested = false;
+if (demoProbe) {
+  const requestStop = () => { stopRequested = true; };
+  process.on('SIGINT', requestStop);
+  process.on('SIGTERM', requestStop);
+}
 if (collaborationProbe && (!webSessionProbe || !collaborationTarball)) throw new Error('Collaboration probe needs Web Session and collaboration tarball');
 if (realModelProbe && !collaborationProbe) throw new Error('Real-model probe needs WORKDSH_PROBE_COLLABORATION=1');
 if (gatewayProbe && !webSessionProbe) throw new Error('Gateway probe needs WORKDSH_PROBE_WEB_SESSION=1');
@@ -708,12 +714,13 @@ for (const number of [1, 2]) {
       console.log(`Member ${index + 1}: ${person.email} / ${person.password}`);
     }
     console.log('Log in as either member, choose “打开我的 DSH”, then use “协作交接”. Type q and press Enter here to revoke test access and stop both DSH Hosts.');
-    await new Promise(resolve => {
+    if (!stopRequested) await new Promise(resolve => {
       const stop = () => {
         process.stdin.off('data', onInput);
         process.off('SIGINT', stop);
         process.off('SIGTERM', stop);
         process.stdin.pause();
+        process.stdin.destroy();
         resolve();
       };
       const onInput = input => { if (String(input).trim().toLowerCase() === 'q') stop(); };

@@ -21,6 +21,14 @@ const origins = {
 };
 const directory = await mkdtemp(join(tmpdir(), 'workdsh-collaboration-demo-'));
 const children = [];
+let probe;
+let stopRequested = false;
+const requestStop = () => {
+  stopRequested = true;
+  if (probe?.stdin?.writable) probe.stdin.write('q\n');
+};
+process.on('SIGINT', requestStop);
+process.on('SIGTERM', requestStop);
 
 async function assertAvailable(port) {
   await new Promise((resolvePort, reject) => {
@@ -40,7 +48,8 @@ async function run(command, args, cwd) {
 
 function start(command, args, cwd, env) {
   let log = '';
-  const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32' });
   for (const stream of [child.stdout, child.stderr]) stream.on('data', part => {
     log = (log + part.toString()).slice(-5000);
   });
@@ -64,8 +73,14 @@ async function waitFor(origin, processInfo) {
 async function stop(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const finished = new Promise(resolveStop => child.once('close', resolveStop));
-  child.kill('SIGTERM');
-  const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
+  const signal = kind => {
+    try {
+      if (process.platform === 'win32') child.kill(kind);
+      else process.kill(-child.pid, kind);
+    } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  };
+  signal('SIGTERM');
+  const timer = setTimeout(() => signal('SIGKILL'), 3000);
   await finished;
   clearTimeout(timer);
 }
@@ -82,6 +97,7 @@ try {
   const corepack = join(dirname(process.execPath), 'corepack');
   const npm = join(dirname(process.execPath), 'npm');
   for (const [name, relative] of packages) {
+    if (stopRequested) throw new Error('Collaboration demo interrupted');
     console.log(`Preparing ${name}...`);
     await run(corepack, ['pnpm', '--filter', name, 'build'], source);
     const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', directory], join(source, relative));
@@ -103,13 +119,15 @@ try {
     WORKDSH_BOOTSTRAP_ADMIN_PASSWORD: adminPassword,
   });
   await waitFor(`${origins.admin}/api/auth/me`, backend);
+  if (stopRequested) throw new Error('Collaboration demo interrupted');
   const frontend = start(npm, ['run', 'dev'], join(root, 'web'), {
     ...env, WORKDSH_WEB_PORT: String(ports.web), WORKDSH_ADMIN_URL: origins.admin,
   });
   await waitFor(origins.web, frontend);
+  if (stopRequested) throw new Error('Collaboration demo interrupted');
 
   console.log('Running the two-member collaboration checks before opening the demo...');
-  const probe = spawn(process.execPath, [join(root, 'scripts/probe-two-dsh-instances.mjs')], {
+  probe = spawn(process.execPath, [join(root, 'scripts/probe-two-dsh-instances.mjs')], {
     cwd: root,
     env: {
       ...env,
@@ -129,12 +147,16 @@ try {
       WORKDSH_PROBE_GATEWAY: '1',
       WORKDSH_PROBE_DEMO: '1',
     },
-    stdio: 'inherit',
+    stdio: ['pipe', 'inherit', 'inherit'], detached: process.platform !== 'win32',
   });
   children.push(probe);
+  process.stdin.pipe(probe.stdin);
   const code = await new Promise(resolveExit => probe.once('close', resolveExit));
   if (code !== 0) throw new Error(`Collaboration probe exited with code ${code}`);
 } finally {
+  if (probe?.stdin) process.stdin.unpipe(probe.stdin);
   for (const child of children.reverse()) await stop(child);
   await rm(directory, { recursive: true, force: true });
+  process.off('SIGINT', requestStop);
+  process.off('SIGTERM', requestStop);
 }
