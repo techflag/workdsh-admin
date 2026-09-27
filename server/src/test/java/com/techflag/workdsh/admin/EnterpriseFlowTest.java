@@ -51,8 +51,16 @@ class EnterpriseFlowTest {
                 .header("Authorization", bearer(admin)), 200).path("runtimeToken").asText();
         String sellerRuntimeToken = call(post("/api/admin/members/" + sellerId + "/runtime-credential")
                 .header("Authorization", bearer(admin)), 200).path("runtimeToken").asText();
-        assertEquals(reviewerId, call(get("/api/internal/runtime/identity")
-                .header("Authorization", "Runtime " + runtimeToken), 200).path("principalId").asText());
+        JsonNode runtimeIdentity = call(get("/api/internal/runtime/identity")
+                .header("Authorization", "Runtime " + runtimeToken), 200);
+        assertEquals(7, runtimeIdentity.size());
+        assertEquals(1, runtimeIdentity.path("contractVersion").asInt());
+        assertEquals(reviewerId, runtimeIdentity.path("principalId").asText());
+        assertFalse(runtimeIdentity.path("organizationId").asText().isBlank());
+        assertFalse(runtimeIdentity.path("organizationName").asText().isBlank());
+        assertEquals("MEMBER", runtimeIdentity.path("role").asText());
+        assertTrue(runtimeIdentity.path("membershipRevision").asInt() > 0);
+        assertTrue(runtimeIdentity.path("active").asBoolean());
         call(get("/api/admin/members").header("Authorization", "Runtime " + runtimeToken), 401);
         call(get("/api/admin/orders").header("Authorization", "Runtime " + runtimeToken), 401);
 

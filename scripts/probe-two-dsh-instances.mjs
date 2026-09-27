@@ -12,6 +12,26 @@ if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 19)) {
 }
 const exec = promisify(execFile);
 const source = resolve(process.env.WORKDSH_SOURCE ?? '../workdsh');
+const adminIdentitySchema = JSON.parse(await readFile(resolve('docs/runtime-identity-v1.schema.json'), 'utf8'));
+const pluginIdentitySchema = JSON.parse(await readFile(join(source, 'packages/providers/identity-enterprise/runtime-identity-v1.schema.json'), 'utf8'));
+assert.deepEqual(pluginIdentitySchema, adminIdentitySchema, 'Admin and DSH identity plugin must use the same contract');
+const assertRuntimeIdentityV1 = value => {
+  const schema = adminIdentitySchema;
+  assert.equal(schema.$id, 'urn:workdsh:enterprise-runtime-identity:v1');
+  assert.equal(schema.additionalProperties, false);
+  assert.ok(value && typeof value === 'object' && !Array.isArray(value));
+  assert.deepEqual(Object.keys(value).sort(), [...schema.required].sort(), 'runtime identity response fields differ from v1');
+  for (const [field, rule] of Object.entries(schema.properties)) {
+    const actual = value[field];
+    if (rule.type === 'integer') assert.ok(Number.isInteger(actual), `${field} must be an integer`);
+    else assert.equal(typeof actual, rule.type, `${field} has the wrong type`);
+    if ('const' in rule) assert.equal(actual, rule.const, `${field} has the wrong constant`);
+    if (rule.enum) assert.ok(rule.enum.includes(actual), `${field} is outside the allowed values`);
+    if (rule.minLength !== undefined) assert.ok(actual.length >= rule.minLength, `${field} is too short`);
+    if (rule.maxLength !== undefined) assert.ok(actual.length <= rule.maxLength, `${field} is too long`);
+    if (rule.minimum !== undefined) assert.ok(actual >= rule.minimum, `${field} is too small`);
+  }
+};
 const admin = process.env.WORKDSH_ADMIN_URL ?? 'http://127.0.0.1:18890';
 const adminEmail = process.env.WORKDSH_BOOTSTRAP_ADMIN_EMAIL;
 const adminPassword = process.env.WORKDSH_BOOTSTRAP_ADMIN_PASSWORD;
@@ -305,6 +325,7 @@ for (const number of [1, 2]) {
     const response = await runtimeIdentity(host.person.runtimeToken);
     assert.equal(response.status, 200);
     const resolved = await response.json();
+    assertRuntimeIdentityV1(resolved);
     assert.equal(resolved.principalId, host.person.id);
     host.organizationId = resolved.organizationId;
   }
