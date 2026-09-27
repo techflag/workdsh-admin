@@ -33,6 +33,8 @@ node scripts/start-collaboration-demo.mjs
 
 脚本从相邻 `workdsh` 仓库构建并打包身份、审计、权限和协作插件，启动临时 Spring Boot 服务、管理网页及两个独立 DSH Host；运行验证后在终端显示两个临时成员的账号。分别登录 `http://127.0.0.1:18894/`，点“打开我的 DSH”，在“协作交接”页发起与完成交接。输入 `q` 并回车会撤销测试访问、停用成员、关闭服务并删除临时插件包。若 WorkDSH 源码不在相邻目录，设置 `WORKDSH_SOURCE` 为其绝对路径。端口 18892、18894、18895 须空闲，且 WorkDSH 的 pnpm 依赖与管理网页 npm 依赖须已安装。此演示使用固定模型测试桩，只验证协作链路，不验证真实模型自主选择工具。
 
+自动验收还会从官方插件清单核对企业身份、审计、权限与协作插件的 Fiber 均为 `ACTIVE`；只看到配置或导航入口不算插件成功运行。
+
 ```bash
 cd server
 WORKDSH_BOOTSTRAP_ADMIN_EMAIL=admin@example.test \

@@ -157,7 +157,7 @@ export function apply(ctx){
     } catch(error) {return Response.json({ok:false,error:String(error?.message??error)},{status:500})}
   }}));
 }`);
-  await writeFile(join(fixture, 'client.js'), "window.__ModuleLoader__.load({id:'workdsh-enterprise-web-fixture',factory:function(){return {inject:['sessions','uiWorkspace'],apply:function(ctx){ctx.effect(function(){window.enterpriseProbe={open:async function(id){await ctx.sessions.refresh();ctx.uiWorkspace.openSession(id)}};return function(){delete window.enterpriseProbe}})}}}});");
+  await writeFile(join(fixture, 'client.js'), "window.__ModuleLoader__.load({id:'workdsh-enterprise-web-fixture',factory:function(){return {inject:['sessions','uiWorkspace','remote','remote.pluginInventory'],apply:function(ctx){ctx.effect(function(){window.enterpriseProbe={open:async function(id){await ctx.sessions.refresh();ctx.uiWorkspace.openSession(id)},inventory:async function(){const result=await ctx.remote.pluginInventory.list();if(!result.ok)throw Error(result.error.code);return result.value.entries.map(row=>({module:row.moduleName,phase:row.fiberPhase}))}};return function(){delete window.enterpriseProbe}})}}}});");
   const npm = join(dirname(process.execPath), 'npm');
   await exec(npm, ['pack', '--pack-destination', fixture], { cwd: fixture, timeout: 30_000 });
   probeTarball = join(fixture, 'workdsh-enterprise-web-fixture-0.0.0.tgz');
@@ -358,6 +358,14 @@ for (const number of [1, 2]) {
       await page.goto(recipient.origin);
       for (const name of ['Continue', 'Configure later'])
         await page.getByRole('button', { name, exact: true }).click({ timeout: 2_000 }).catch(() => {});
+      await page.waitForFunction(() => !!window.enterpriseProbe?.inventory, null, { timeout: 15_000 });
+      const inventory = await page.evaluate(() => window.enterpriseProbe.inventory());
+      for (const name of ['workdsh-provider-identity-enterprise', 'workdsh-plugin-audit',
+        'workdsh-plugin-access', 'workdsh-plugin-enterprise-collaboration']) {
+        const entry = inventory.find(row => row.module === name);
+        assert.ok(entry, `${name} must appear in the official plugin inventory`);
+        assert.equal(String(entry.phase).toUpperCase(), 'ACTIVE', `${name} Fiber must be ACTIVE`);
+      }
       await page.getByLabel('1 项待处理交接').waitFor({ timeout: 15_000 });
       await page.getByText('协作交接', { exact: true }).first().click({ timeout: 15_000 });
       await page.getByTestId('workdsh-collaboration').getByText(summary).waitFor({ timeout: 15_000 });
