@@ -51,6 +51,7 @@ class CollaborationFlowTest {
 
         JsonNode colleagues = call(get("/api/collaboration/colleagues").header("Authorization", "Runtime " + aRuntime), 200);
         assertTrue(colleagues.findValuesAsText("id").contains(bId));
+        assertEquals("collab-b@example.test", colleagues.get(0).path("email").asText());
         assertFalse(colleagues.findValuesAsText("id").contains(aId));
         String body = json.writeValueAsString(Map.of("recipientId", bId, "summary", "请复核分析结果并反馈", "requestKey", "native-call-1"));
         JsonNode handoff = call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)

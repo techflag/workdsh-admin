@@ -23,7 +23,7 @@ Authorization: Runtime <instance-secret>
 
 DSH 插件在启动及每次 `resolve` 时向该端点核验；服务不可用、401、错误版本或不合法响应均拒绝新操作。插件将结果映射到 WorkDSH `IdentityService`/`ActorContext`，原有 Session Access Bridge 负责绑定 Session owner。DSH 的工具审批不是业务复核：订单待办、复核意见和审计保存在本服务端。
 
-通用成员交接也走同一身份边界。`GET /api/collaboration/colleagues` 只返回同组织有效成员的 ID 和姓名；`POST /api/collaboration/handoffs` 由服务端从凭据确定发送人，接收人必须是同组织的另一名有效成员。`GET /api/collaboration/inbox` 与 `/sent` 仅返回当前成员接收或发出的记录；只有接收人能调用 `POST /api/collaboration/handoffs/{id}/complete` 回执。发送携带同一工具调用的 `requestKey` 去重。它不复制或开放任何 DSH Session，也不要求创建订单。
+通用成员交接也走同一身份边界。`GET /api/collaboration/colleagues` 只返回同组织有效成员的 ID、姓名和邮箱，用邮箱区分重名成员；`POST /api/collaboration/handoffs` 由服务端从凭据确定发送人，接收人必须是同组织的另一名有效成员。`GET /api/collaboration/inbox` 与 `/sent` 仅返回当前成员接收或发出的记录；只有接收人能调用 `POST /api/collaboration/handoffs/{id}/complete` 回执。发送携带同一工具调用的 `requestKey` 去重。它不复制或开放任何 DSH Session，也不要求创建订单。
 
 管理员的 Web 登录 token 与 DSH 实例凭据是不同用途的秘密。Web token 不能提交到实例身份端点，实例凭据不能作为管理员登录凭据。默认 WorkDSH 本地 Profile 仍使用 `identity-local`；企业 Profile 必须只加载 `identity-enterprise`，并为每名成员使用独立 Profile/数据目录。多实例演示不等于多人公网入口、共享文件或代码执行已隔离，相关验收完成前不得开放。
 

@@ -365,7 +365,7 @@ onUnmounted(stopInboxPolling)
         <div class="section-head"><h2>给同事交接</h2></div>
         <div class="panel form-stack" style="max-width:760px">
           <p class="muted">也可以在自己的 DSH 会话里直接提出“@ 某位同事处理这件事”。交接记录归成员所有，不共享整段会话。</p>
-          <label>接收人<a-select v-model="handoffForm.recipientId" placeholder="选择同组织成员"><a-option v-for="item in colleagues" :key="item.id" :value="item.id">{{ item.displayName }}</a-option></a-select></label>
+          <label>接收人<a-select v-model="handoffForm.recipientId" placeholder="选择同组织成员"><a-option v-for="item in colleagues" :key="item.id" :value="item.id">{{ item.displayName }} · {{ item.email }}</a-option></a-select></label>
           <label>需要处理的事<a-textarea v-model="handoffForm.summary" :max-length="2000" :auto-size="{minRows:3,maxRows:7}" placeholder="写清要对方处理什么、期望怎样回执"/></label>
           <div><a-button type="primary" :loading="handoffSending" @click="sendHandoff">@ 同事并交接</a-button></div>
         </div>

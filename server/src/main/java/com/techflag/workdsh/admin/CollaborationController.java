@@ -26,7 +26,7 @@ public class CollaborationController {
         this.auth = auth;
     }
 
-    public record Colleague(String id, String displayName) {}
+    public record Colleague(String id, String displayName, String email) {}
     public record Handoff(String id, String senderId, String senderName, String recipientId,
                           String recipientName, String summary, String status, String resolution,
                           Instant createdAt, Instant completedAt) {}
@@ -38,8 +38,8 @@ public class CollaborationController {
     @GetMapping("/colleagues")
     public List<Colleague> colleagues(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return db.query("select id,display_name from members where organization_id=? and active=true and must_change_password=false and id<>? order by display_name",
-                (rs, n) -> new Colleague(rs.getString("id"), rs.getString("display_name")), actor.organizationId(), actor.id());
+        return db.query("select id,display_name,email from members where organization_id=? and active=true and must_change_password=false and id<>? order by display_name,email",
+                (rs, n) -> new Colleague(rs.getString("id"), rs.getString("display_name"), rs.getString("email")), actor.organizationId(), actor.id());
     }
 
     @GetMapping("/inbox")

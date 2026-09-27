@@ -369,6 +369,8 @@ for (const number of [1, 2]) {
       await page.getByLabel('1 项待处理交接').waitFor({ timeout: 15_000 });
       await page.getByText('协作交接', { exact: true }).first().click({ timeout: 15_000 });
       await page.getByTestId('workdsh-collaboration').getByText(summary).waitFor({ timeout: 15_000 });
+      assert.equal(await page.getByRole('combobox', { name: '接收人' })
+        .locator('option', { hasText: sender.person.email }).count(), 1);
       const uiSummary = `请回看交接 ${stamp}`;
       await page.getByRole('combobox', { name: '接收人' }).selectOption(sender.person.id);
       await page.getByRole('textbox', { name: '交接事项' }).fill(uiSummary);
