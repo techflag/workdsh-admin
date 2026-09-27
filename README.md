@@ -68,7 +68,7 @@ cd web && npm run build
 
 启动管理服务和开发前端后，`scripts/probe-collaboration-ui.mjs` 使用两个独立浏览器身份验证销售指派、复核员自动看到待办、退回后销售自动看到提示和服务端状态。该脚本需要上述 `WORKDSH_SOURCE` 与管理员环境变量，以及 WorkDSH 开发依赖中的 Playwright；测试后停用临时成员，订单仍保留在本地开发数据库中。它验证成员业务页面的协作交接，**不等于 DSH 原生会话已经完成跨成员协作**。
 
-通用交接可运行 `scripts/probe-handoff-ui.mjs`：两个独立浏览器账号发起交接、接收、回执和查看结果，不创建订单。双 DSH Host 探针额外设置 `WORKDSH_ENTERPRISE_COLLABORATION_TARBALL` 和 `WORKDSH_PROBE_COLLABORATION=1`，会在两份隔离的正式 DSH Web Host 的原生会话里调用交接工具，验证发送、接收、完成和回读；还会检查接收者 DSH 侧栏待办数、交接页面内容，并从 DSH 页面发起交接、在另一成员 DSH 页面完成回执，最后读取服务端保存的结果。该探针使用固定模型测试桩，尚未验证真实模型自行选择工具的行为。
+通用交接可运行 `scripts/probe-handoff-ui.mjs`：两个独立浏览器账号完成 A 交接、B 追问、A 答复、B 回执，检查每一步的讨论内容和双方“待回应”数字，不创建订单。双 DSH Host 探针额外设置 `WORKDSH_ENTERPRISE_COLLABORATION_TARBALL` 和 `WORKDSH_PROBE_COLLABORATION=1`，会在两份隔离的正式 DSH Web Host 的原生会话里调用交接工具，验证发送、接收、完成和回读；还会检查接收者 DSH 侧栏待办数、交接页面内容，并从 DSH 页面发起交接、在另一成员 DSH 页面完成回执，最后读取服务端保存的结果。该探针使用固定模型测试桩，尚未验证真实模型自行选择工具的行为。
 
 该探针还在临时测试插件中注册一个计算工具：A 的同一原生会话先计算 `8 × 120 = 960`，再把工具结果通过正式协作插件交接给 B；B 回执后 A 读取结果。计算工具不会进入正式协作插件或订单功能。这验证 DSH 工具可以组合成“计算 → @ 成员”的执行链，不代表真实模型的自主决策能力已验收。
 

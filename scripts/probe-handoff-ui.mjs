@@ -68,6 +68,25 @@ try {
     .locator('.inbox-count').getByText('1').waitFor({ timeout: 20_000 });
   await recipient.page.locator('.rail').getByRole('button', { name: /协作交接/ }).click();
   await recipient.page.getByText(summary).first().waitFor({ timeout: 20_000 });
+  const recipientHandoff = recipient.page.locator('.review-event').filter({ hasText: summary });
+  await recipientHandoff.getByRole('button', { name: '查看讨论 / 追问' }).click();
+  const question = `这个分析的数据来源是什么？${stamp}`;
+  await recipientHandoff.getByPlaceholder('向同事追问或补充信息').fill(question);
+  await recipientHandoff.getByRole('button', { name: '发送消息' }).click();
+  await recipientHandoff.getByText(question).waitFor();
+  await sender.page.locator('.rail').getByRole('button', { name: /协作交接/ })
+    .locator('.inbox-count').getByText('1').waitFor({ timeout: 20_000 });
+  await sender.page.locator('.rail').getByRole('button', { name: /协作交接/ }).click();
+  const senderHandoff = sender.page.locator('.review-event').filter({ hasText: summary });
+  await senderHandoff.getByRole('button', { name: '查看讨论 / 补充' }).click();
+  await senderHandoff.getByText(question).waitFor();
+  const answer = `依据已确认的原始材料，见项目资料。${stamp}`;
+  await senderHandoff.getByPlaceholder('回答同事的问题或补充信息').fill(answer);
+  await senderHandoff.getByRole('button', { name: '发送消息' }).click();
+  await senderHandoff.getByText(answer).waitFor();
+  await recipient.page.locator('.rail').getByRole('button', { name: /协作交接/ })
+    .locator('.inbox-count').getByText('1').waitFor({ timeout: 20_000 });
+  await recipientHandoff.getByText(answer).waitFor({ timeout: 20_000 });
   await recipient.page.getByPlaceholder('完成后填写结果').fill('已核对，建议补充来源');
   await recipient.page.getByRole('button', { name: '完成并回执' }).click();
   await recipient.page.getByText('已回执，发送人可以查看结果').waitFor();
@@ -76,7 +95,7 @@ try {
   assert.equal((await api('/api/collaboration/sent', { token: (await api('/api/auth/login', {
     method: 'POST', body: { email: sender.email, password: sender.password },
   })).token }))[0].status, 'DONE');
-  console.log('PASS: two browser members send a handoff, receive it, complete it and show the sender a new reply without an order.');
+  console.log('PASS: two browser members hand off, ask, answer and complete; both see the next response in their own inbox without an order.');
 } finally {
   if (browser) await browser.close();
   const directory = await api('/api/admin/members', { token: admin });
