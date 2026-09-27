@@ -47,9 +47,9 @@ const isAdmin = computed(() => me.value?.role === 'OWNER' || me.value?.role === 
 const returnedCount = computed(() => orders.value.filter(item => item.creatorId === me.value?.id && item.status === 'CHANGES_REQUESTED').length)
 const nav = computed(() => [
   { id: 'overview', label: '组织概览' },
+  { id: 'handoffs', label: '协作交接' },
   ...(isAdmin.value ? [{ id: 'members', label: '成员与角色' }, { id: 'admin-orders', label: '订单授权' }] : []),
   { id: 'orders', label: '我的订单' },
-  { id: 'handoffs', label: '协作交接' },
   { id: 'inbox', label: '复核待办' },
   ...(isAdmin.value ? [{ id: 'audit', label: '审计记录' }] : []),
 ])
@@ -303,7 +303,7 @@ onUnmounted(stopInboxPolling)
   <div v-if="!me" class="login-wrap">
     <div class="login-card">
       <div class="brand" style="color:#202633;padding:0 0 28px"><b>W</b> WorkDSH <small>ENTERPRISE CONSOLE</small></div>
-      <h1>登录企业空间</h1><p class="subtitle">管理成员与订单，让协作有明确的归属。</p>
+      <h1>登录企业空间</h1><p class="subtitle">进入自己的 DSH，与同事交接事项并接收回执。</p>
       <form class="form-stack" @submit.prevent="login">
         <label>邮箱<a-input v-model="loginForm.email" type="email" autocomplete="username" placeholder="name@company.com" /></label>
         <label>密码<a-input-password v-model="loginForm.password" autocomplete="current-password" placeholder="输入密码" /></label>
