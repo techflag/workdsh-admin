@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 
 const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
@@ -23,7 +24,9 @@ const webSessionProbe = process.env.WORKDSH_PROBE_WEB_SESSION === '1';
 const gatewayProbe = process.env.WORKDSH_PROBE_GATEWAY === '1';
 const collaborationProbe = process.env.WORKDSH_PROBE_COLLABORATION === '1';
 const demoProbe = process.env.WORKDSH_PROBE_DEMO === '1';
+const realModelProbe = process.env.WORKDSH_PROBE_REAL_MODEL === '1';
 if (collaborationProbe && (!webSessionProbe || !collaborationTarball)) throw new Error('Collaboration probe needs Web Session and collaboration tarball');
+if (realModelProbe && !collaborationProbe) throw new Error('Real-model probe needs WORKDSH_PROBE_COLLABORATION=1');
 if (gatewayProbe && !webSessionProbe) throw new Error('Gateway probe needs WORKDSH_PROBE_WEB_SESSION=1');
 if (demoProbe && (!collaborationProbe || !gatewayProbe || ordersTarball)) {
   throw new Error('Local demo needs the collaboration Web Session gateway probe without the orders fixture');
@@ -36,6 +39,14 @@ if (webSessionProbe && ((!ordersTarball && !collaborationTarball) || !auditTarba
   throw new Error('Web Session probe needs identity, audit, access and one domain plugin tarball');
 }
 const dsh = join(source, 'node_modules/@deepseek-ai/dsh/lib/bin.js');
+let realModelCredentials;
+if (realModelProbe) {
+  const { parseDocument, stringify } = createRequire(join(source, 'packages/plugins/experts/package.json'))('yaml');
+  const preview = parseDocument(await readFile(join(source, '.test-runtime/preview/.credentials.yaml'), 'utf8')).toJSON();
+  const key = preview.refs?.DEEPSEEK_API_KEY;
+  if (typeof key !== 'string' || key.length < 10) throw new Error('Configure the WorkDSH preview DeepSeek credential first');
+  realModelCredentials = stringify({ version: 1, records: {}, refs: { DEEPSEEK_API_KEY: key } });
+}
 const stamp = Date.now().toString(36);
 const request = async (path, { method = 'GET', bearer, runtime, body, file } = {}) => {
   const upload = file ? new FormData() : null;
@@ -135,6 +146,31 @@ export function apply(ctx){
         if(!resumed.agent) throw new Error('Session Agent unavailable');
         return Response.json({ok:true,sessionId:input.sessionId});
       }
+      if(input.action==='real-model-status') {
+        if(typeof input.sessionId!=='string'||!input.sessionId.startsWith('session-')) throw new Error('Invalid Session ID');
+        const opened=await ctx.sessionPersistence.open(input.sessionId,'read');
+        let snapshot;
+        try {snapshot=await opened.read()} finally {await opened.close()}
+        const events=snapshot.events;
+        return Response.json({ok:true,calledTools:events.filter(e=>e.type==='tool/call').map(e=>e.data.name),
+          turnEnds:events.filter(e=>e.type==='turn/end').length,
+          errors:events.filter(e=>/error|fault/.test(e.type)).map(e=>e.type)});
+      }
+      if(input.action==='begin-real-model-handoff'||input.action==='begin-real-model-analysis') {
+        const handoffRequested=input.action==='begin-real-model-handoff';
+        if(handoffRequested&&(typeof input.recipientEmail!=='string'||!input.recipientEmail.endsWith('@example.test')
+          ||typeof input.summary!=='string'||input.summary.length>200)) throw new Error('Invalid real-model handoff');
+        const created=await ctx.workdshSessionAccess.create({cwd:process.cwd()},request.signal);
+        await ctx.sessionController.selectModel({sessionId:created.sessionId,provider:'deepseek-official',model:'deepseek-flash'});
+        const resolved=await ctx.workdshSessionAccess.resolveAgent(created.sessionId,request.signal);
+        if(!resolved.agent) throw new Error('Session Agent unavailable');
+        const prompt=handoffRequested?'请把“'+input.summary+'”交接给同事 '+input.recipientEmail+'。这是我明确授权的发送操作。'
+          +'先调用 workdsh_collaboration_colleagues，按邮箱核对接收人；再调用 workdsh_collaboration_send 发送一次。'
+          +'不要猜测成员 ID，不要发给其他人。完成后简短告知结果。'
+          :'请只分析 8 × 120 是否等于 960，并给我两条核对建议。这只是我自己查看的分析；不要联系同事，不要发送交接，也不要产生待办。';
+        resolved.agent.followup(createMessage({role:'user',source:{kind:'user'},content:[{type:'text',text:prompt}]}));
+        return Response.json({ok:true,sessionId:created.sessionId});
+      }
       if(input.action==='calculation-handoff') {
         if(typeof input.recipientId!=='string'||!Number.isFinite(input.quantity)||!Number.isFinite(input.unitPrice)) throw new Error('Invalid calculation handoff');
         targetMode='calculation-handoff';chainStage=0;targetTool='workdsh_fixture_calculate';targetArgs={recipient_id:input.recipientId,quantity:input.quantity,unit_price:input.unitPrice};
@@ -184,6 +220,8 @@ for (const number of [1, 2]) {
   for (const person of people) {
     const home = await mkdtemp(join(tmpdir(), 'workdsh-enterprise-instance-'));
     homes.push(home);
+    if (realModelProbe && person === people[0])
+      await writeFile(join(home, '.credentials.yaml'), realModelCredentials, { mode: 0o600 });
     const env = {
       ...process.env, DSH_HOME: home, DSH_AGENTS_HOME: join(home, 'agents'),
       WORKDSH_ADMIN_URL: admin, WORKDSH_RUNTIME_TOKEN: person.runtimeToken,
@@ -459,6 +497,53 @@ for (const number of [1, 2]) {
     await nativeCall(sender, 'workdsh_collaboration_sent', {}, '复核完成');
     assert.equal((await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken }))[0].status, 'DONE');
     console.log('PASS: a native DSH Session calculates first, then sends the result to a colleague; the other member completes and the sender reads back, without an order.');
+    if (realModelProbe) {
+      const runReal = async input => {
+        const started = await fetch(`${sender.origin}/api/enterprise-session-probe`, {
+          method: 'POST', headers: { cookie: sender.cookie, 'content-type': 'application/json' },
+          body: JSON.stringify(input), signal: AbortSignal.timeout(15_000),
+        });
+        const beginning = await started.json();
+        assert.equal(started.status, 200, JSON.stringify(beginning));
+        const deadline = Date.now() + 150_000;
+        let status;
+        while (Date.now() < deadline) {
+          const response = await fetch(`${sender.origin}/api/enterprise-session-probe`, {
+            method: 'POST', headers: { cookie: sender.cookie, 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'real-model-status', sessionId: beginning.sessionId }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          status = await response.json();
+          assert.equal(response.status, 200, JSON.stringify(status));
+          if (status.turnEnds > 0) break;
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        assert.ok(status?.turnEnds > 0, `Real-model turn did not finish: ${JSON.stringify(status)}`);
+        return status;
+      };
+      const realSummary = `请复核协作验证 ${stamp}`;
+      const status = await runReal({ action: 'begin-real-model-handoff',
+        recipientEmail: recipient.person.email, summary: realSummary });
+      const colleaguesIndex = status.calledTools.indexOf('workdsh_collaboration_colleagues');
+      const sendIndex = status.calledTools.indexOf('workdsh_collaboration_send');
+      assert.ok(colleaguesIndex >= 0 && sendIndex > colleaguesIndex, JSON.stringify(status));
+      const matching = (await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken }))
+        .filter(row => row.summary === realSummary);
+      assert.equal(matching.length, 1, `Real-model handoff count: ${JSON.stringify(status)}`);
+      const [handoff] = matching;
+      assert.equal(handoff.recipientId, recipient.person.id);
+      await nativeCall(recipient, 'workdsh_collaboration_complete', {
+        handoff_id: handoff.id, resolution: '真实模型交接已收到',
+      }, '真实模型交接已收到');
+      await nativeCall(sender, 'workdsh_collaboration_sent', {}, '真实模型交接已收到');
+      console.log('PASS: the real DeepSeek model looked up the colleague by email, sent one handoff, and received a completed result.');
+      const beforeAnalysis = (await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken })).length;
+      const analysis = await runReal({ action: 'begin-real-model-analysis' });
+      assert.ok(!analysis.calledTools.includes('workdsh_collaboration_send'), JSON.stringify(analysis));
+      assert.equal((await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken })).length,
+        beforeAnalysis, 'Analysis-only request must not create a handoff');
+      console.log('PASS: an analysis-only real-model request did not create a colleague handoff.');
+    }
   }
   if (ordersTarball) {
     const { EnterpriseOrdersClient } = await import(join(source, 'packages/plugins/enterprise-orders/dist/index.js'));

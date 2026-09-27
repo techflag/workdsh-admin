@@ -36,6 +36,8 @@ node scripts/start-collaboration-demo.mjs
 
 自动验收还会从官方插件清单核对企业身份、审计、权限与协作插件的 Fiber 均为 `ACTIVE`；只看到配置或导航入口不算插件成功运行。
 
+需要验证真实模型时，可在命令前设置 `WORKDSH_PROBE_REAL_MODEL=1`。脚本只从相邻 WorkDSH 的 `.test-runtime/preview/.credentials.yaml` 读取已配置的 DeepSeek 测试凭据，在 A 的临时 DSH Home 中写入仅该凭据的私有文件，退出时删除。它使用官方 `deepseek-official/deepseek-flash`：一次明确要求按邮箱交接，要求模型先查同事目录再发送；另一次只要求分析，验证不会产生交接。两次均以原生 Session 工具事件和企业服务的交接记录判断，不用模型口头回答代替结果。默认演示仍使用固定测试桩，不会调用真实模型。
+
 ```bash
 cd server
 WORKDSH_BOOTSTRAP_ADMIN_EMAIL=admin@example.test \
