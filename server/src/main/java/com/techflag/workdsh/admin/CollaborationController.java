@@ -60,6 +60,10 @@ public class CollaborationController {
     public Handoff send(@RequestHeader(value="Authorization", required=false) String authorization,
                         @Valid @RequestBody NewHandoff input) {
         var actor = ready(authorization);
+        // Serialize sends by this member so two retries with one request key observe the same result.
+        var sender = db.query("select id from members where id=? and organization_id=? and active=true for update",
+                (rs, row) -> rs.getString("id"), actor.id(), actor.organizationId());
+        if (sender.isEmpty()) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Member is inactive");
         String recipient = input.recipientId().trim();
         if (recipient.equals(actor.id()) || !recipient.matches("[0-9a-fA-F-]{36}")) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose another active colleague");

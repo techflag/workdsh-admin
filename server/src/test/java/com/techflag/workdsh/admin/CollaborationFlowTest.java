@@ -6,6 +6,9 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -64,9 +67,29 @@ class CollaborationFlowTest {
         assertEquals("OPEN", handoff.path("status").asText());
         assertEquals(id, call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
                 .contentType(MediaType.APPLICATION_JSON).content(body), 201).path("id").asText());
-        assertEquals(1, call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200).size());
+        String concurrentBody = json.writeValueAsString(Map.of("recipientId", bId,
+                "summary", "并发重试仍只交接一次", "requestKey", "parallel-call-1"));
+        var start = new CountDownLatch(1);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var first = workers.submit(() -> {
+                start.await();
+                return call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
+                        .contentType(MediaType.APPLICATION_JSON).content(concurrentBody), 201).path("id").asText();
+            });
+            var second = workers.submit(() -> {
+                start.await();
+                return call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
+                        .contentType(MediaType.APPLICATION_JSON).content(concurrentBody), 201).path("id").asText();
+            });
+            start.countDown();
+            assertEquals(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+            assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where sender_id=? and request_key=?",
+                    Integer.class, aId, "parallel-call-1"));
+        } finally { workers.shutdownNow(); }
+        assertEquals(2, call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200).size());
         assertEquals(0, call(get("/api/collaboration/inbox").header("Authorization", bearer(a)), 200).size());
-        assertEquals(1, call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200).size());
+        assertEquals(2, call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200).size());
         call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("recipientId", aId, "summary", "self", "requestKey", "self"))), 400);
@@ -105,7 +128,9 @@ class CollaborationFlowTest {
         }
         JsonNode busyInbox = call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200);
         assertEquals(100, busyInbox.size());
-        assertEquals(olderOpenId, busyInbox.get(0).path("id").asText(), "未完成的旧交接不能被已完成记录挤出收件箱");
+        assertEquals("OPEN", busyInbox.get(0).path("status").asText());
+        assertTrue(busyInbox.findValuesAsText("id").contains(olderOpenId),
+                "未完成的旧交接不能被已完成记录挤出收件箱");
         call(post("/api/collaboration/handoffs/" + olderOpenId + "/complete")
                 .header("Authorization", "Runtime " + bRuntime)
                 .contentType(MediaType.APPLICATION_JSON)
