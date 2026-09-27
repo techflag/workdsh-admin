@@ -34,6 +34,8 @@ h1 { margin: 0; font-size: 28px; letter-spacing: -.5px; }
 .order-aside { background: #f7f9fc; border-radius: 12px; padding: 18px; }
 .review-event { border-top: 1px solid #e0e6ef; padding: 12px 0; overflow-wrap: anywhere; }
 .review-event p { margin: 6px 0 0; line-height: 1.55; }
+.handoff-thread { margin: 12px 0; padding: 12px; border: 1px solid #dfe5ee; border-radius: 8px; background: #f8fafd; }
+.handoff-thread .actions { margin-top: 12px; }
 .source-upload { display: inline-flex; align-items: center; border: 1px solid #a8bef6; border-radius: 8px; color: #2457ba; padding: 7px 12px; cursor: pointer; font-size: 13px; font-weight: 650; }
 .source-upload:hover { background: #edf3ff; }
 .source-upload { position: relative; }

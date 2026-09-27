@@ -105,3 +105,14 @@ create table if not exists collaboration_handoffs (
   unique(sender_id, request_key)
 );
 create index if not exists collaboration_handoff_inbox on collaboration_handoffs(organization_id,recipient_id,status,created_at);
+create table if not exists collaboration_messages (
+  id varchar(36) primary key,
+  handoff_id varchar(36) not null references collaboration_handoffs(id),
+  organization_id varchar(36) not null references organizations(id),
+  author_id varchar(36) not null references members(id),
+  request_key varchar(128) not null,
+  content varchar(2000) not null,
+  created_at timestamp not null,
+  unique(handoff_id,author_id,request_key)
+);
+create index if not exists collaboration_messages_thread on collaboration_messages(handoff_id,created_at);

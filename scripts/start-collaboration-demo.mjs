@@ -13,7 +13,14 @@ if (major < 22 || (major === 22 && minor < 19)) throw new Error('Node.js 22.19+ 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = resolve(process.env.WORKDSH_SOURCE ?? join(root, '..', 'workdsh'));
-const ports = { gateway: 18892, web: 18894, admin: 18895 };
+const ports = {
+  gateway: Number(process.env.WORKDSH_DEMO_GATEWAY_PORT ?? 18892),
+  web: Number(process.env.WORKDSH_DEMO_WEB_PORT ?? 18894),
+  admin: Number(process.env.WORKDSH_DEMO_ADMIN_PORT ?? 18895),
+};
+if (new Set(Object.values(ports)).size !== 3 || Object.values(ports).some(port => !Number.isInteger(port) || port < 1024 || port > 65535)) {
+  throw new Error('Demo ports must be three distinct TCP ports between 1024 and 65535');
+}
 const origins = {
   gateway: `http://127.0.0.1:${ports.gateway}`,
   web: `http://127.0.0.1:${ports.web}`,

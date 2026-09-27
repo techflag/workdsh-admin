@@ -208,7 +208,7 @@ export function apply(ctx){
         if(typeof input.recipientId!=='string'||!Number.isFinite(input.quantity)||!Number.isFinite(input.unitPrice)) throw new Error('Invalid calculation handoff');
         targetMode='calculation-handoff';chainStage=0;targetTool='workdsh_fixture_calculate';targetArgs={recipient_id:input.recipientId,quantity:input.quantity,unit_price:input.unitPrice};
       } else {
-        if(!['workdsh_order_list','workdsh_review_inbox','workdsh_collaboration_send','workdsh_collaboration_inbox','workdsh_collaboration_sent','workdsh_collaboration_complete'].includes(input.tool)) throw new Error('Invalid probe tool');
+        if(!['workdsh_order_list','workdsh_review_inbox','workdsh_collaboration_send','workdsh_collaboration_inbox','workdsh_collaboration_sent','workdsh_collaboration_complete','workdsh_collaboration_thread','workdsh_collaboration_reply'].includes(input.tool)) throw new Error('Invalid probe tool');
         targetMode='single';targetTool=input.tool;targetArgs=input.args??{};
       }
       const created=await ctx.workdshSessionAccess.create({cwd:process.cwd()},request.signal);
@@ -465,6 +465,17 @@ for (const number of [1, 2]) {
       await senderPage.getByText('协作交接', { exact: true }).first().click({ timeout: 15_000 });
       await senderPage.getByTestId('workdsh-collaboration').getByText(uiSummary).waitFor({ timeout: 15_000 });
       const reply = senderPage.getByTestId('workdsh-collaboration').locator('article').filter({ hasText: uiSummary });
+      await reply.getByRole('button', { name: '查看讨论 / 追问' }).click();
+      await reply.getByRole('textbox', { name: /补充消息/ }).fill('请补充计算依据');
+      await reply.getByRole('button', { name: '发送消息' }).click();
+      await page.getByRole('button', { name: '刷新' }).click();
+      const sentRow = page.getByTestId('workdsh-collaboration').locator('article').filter({ hasText: uiSummary });
+      await sentRow.getByRole('button', { name: '查看讨论 / 追问' }).click();
+      await sentRow.getByText('请补充计算依据').waitFor();
+      await sentRow.getByRole('textbox', { name: /补充消息/ }).fill('8 × 120 = 960，来自本次计算');
+      await sentRow.getByRole('button', { name: '发送消息' }).click();
+      await senderPage.getByRole('button', { name: '刷新' }).click();
+      await reply.getByText('8 × 120 = 960，来自本次计算').waitFor();
       await reply.getByRole('textbox', { name: /回执/ }).fill('review-done');
       await reply.getByRole('button', { name: '完成并回执' }).click({ timeout: 5_000 }).catch(async error => {
         throw new Error(`${error.message}\nBody: ${(await senderPage.locator('body').innerText()).slice(-900)}\nErrors: ${senderErrors.join(' | ')}`);
@@ -477,7 +488,7 @@ for (const number of [1, 2]) {
       await page.getByTestId('workdsh-collaboration').getByText('回执：review-done').waitFor({ timeout: 8_000 });
       await senderContext.close();
       await context.close(); await browser.close(); browser = undefined;
-      console.log('PASS: packaged DSH sidebar shows an incoming item; native pages send and complete a handoff.');
+      console.log('PASS: packaged DSH pages ask, answer and complete a handoff between two members.');
     }
     if (gatewayProbe && !ordersTarball) {
       const { chromium } = await import(join(source, 'node_modules/@playwright/test/index.mjs'));
@@ -525,12 +536,20 @@ for (const number of [1, 2]) {
     }
     const receivedSession = await nativeCall(recipient, 'workdsh_collaboration_inbox', {}, sent[0].id);
     recipient.webSessionId = receivedSession.sessionId;
+    await nativeCall(recipient, 'workdsh_collaboration_reply', {
+      handoff_id: sent[0].id, content: '请补充计算依据',
+    }, '请补充计算依据');
+    await nativeCall(sender, 'workdsh_collaboration_thread', { handoff_id: sent[0].id }, '请补充计算依据');
+    await nativeCall(sender, 'workdsh_collaboration_reply', {
+      handoff_id: sent[0].id, content: '8 × 120 = 960，来自本次计算',
+    }, '8 × 120 = 960');
+    await nativeCall(recipient, 'workdsh_collaboration_thread', { handoff_id: sent[0].id }, '来自本次计算');
     await nativeCall(recipient, 'workdsh_collaboration_complete', {
       handoff_id: sent[0].id, resolution: '复核完成：请补充来源说明',
     }, '复核完成');
     await nativeCall(sender, 'workdsh_collaboration_sent', {}, '复核完成');
     assert.equal((await request('/api/collaboration/sent', { runtime: sender.person.runtimeToken }))[0].status, 'DONE');
-    console.log('PASS: a native DSH Session calculates first, then sends the result to a colleague; the other member completes and the sender reads back, without an order.');
+    console.log('PASS: native DSH Sessions calculate, hand off, discuss, complete and read back without an order.');
     if (realModelProbe) {
       const runReal = async (host, input) => {
         const started = await fetch(`${host.origin}/api/enterprise-session-probe`, {

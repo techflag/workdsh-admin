@@ -104,6 +104,29 @@ class CollaborationFlowTest {
         call(post("/api/collaboration/handoffs").header("Authorization", "Runtime " + aRuntime)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("recipientId", bId, "summary", "different", "requestKey", "native-call-1"))), 409);
+        String question = json.writeValueAsString(Map.of("content", "请补充原始计算依据", "requestKey", "question-1"));
+        JsonNode asked = call(post("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", "Runtime " + bRuntime).contentType(MediaType.APPLICATION_JSON).content(question), 201);
+        assertEquals(bId, asked.path("authorId").asText());
+        assertEquals(asked.path("id").asText(), call(post("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(b)).contentType(MediaType.APPLICATION_JSON).content(question), 201)
+                .path("id").asText(), "network retry must not create a second question");
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"不同问题\",\"requestKey\":\"question-1\"}"), 409);
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"content\":\"8 × 120 = 960，来源为本次计算\",\"requestKey\":\"answer-1\"}"), 201);
+        JsonNode thread = call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", "Runtime " + bRuntime), 200);
+        assertEquals(2, thread.size());
+        assertEquals(aId, thread.get(1).path("authorId").asText());
+        assertEquals(2, call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(a)), 200).size());
+        call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(admin)), 404);
+        assertEquals(2, db.queryForObject("select count(*) from collaboration_messages where handoff_id=?", Integer.class, id));
+        assertEquals(2, db.queryForObject("select count(*) from audit_events where action=? and target_id=?",
+                Integer.class, "collaboration.handoff.message", id));
         String complete = json.writeValueAsString(Map.of("resolution", "已核对，两处需修改"));
         call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(a))
                 .contentType(MediaType.APPLICATION_JSON).content(complete), 409);
@@ -119,6 +142,8 @@ class CollaborationFlowTest {
                 Integer.class, "collaboration.handoff.completed", id));
         call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"不同的回执\"}"), 409);
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"完成后追加\",\"requestKey\":\"late-message\"}"), 409);
         assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where id=?", Integer.class, id));
         String olderOpenId = UUID.randomUUID().toString();
         String organizationId = db.queryForObject("select organization_id from members where id=?", String.class, aId);

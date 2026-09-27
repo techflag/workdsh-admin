@@ -20,6 +20,12 @@ const handoffSending = ref(false)
 const handoffRequestKey = ref(crypto.randomUUID())
 watch(() => [handoffForm.recipientId, handoffForm.summary], () => { handoffRequestKey.value = crypto.randomUUID() })
 const handoffResolution = reactive({})
+const openThreadId = ref('')
+const threadMessages = ref([])
+const threadDraft = ref('')
+const threadRequestKey = ref(crypto.randomUUID())
+const threadBusy = ref(false)
+watch(threadDraft, () => { threadRequestKey.value = crypto.randomUUID() })
 const audits = ref([])
 const order = ref(null)
 const reviewEvents = ref([])
@@ -140,6 +146,9 @@ async function pollInbox() {
     const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id) !== 'DONE')
     handoffInbox.value = latestHandoffs
     handoffSent.value = latestSent
+    if (page.value === 'handoffs' && openThreadId.value) {
+      threadMessages.value = await api(`/collaboration/handoffs/${openThreadId.value}/messages`)
+    }
     knownHandoffIds = new Set(latestHandoffs.map(item => item.id))
     knownSentStatuses = new Map(latestSent.map(item => [item.id, item.status]))
     orders.value = latestOrders
@@ -189,6 +198,30 @@ async function completeHandoff(item) {
     delete handoffResolution[item.id]
     await load(); Message.success('已回执，发送人可以查看结果')
   } catch (e) { tell(e) }
+}
+async function showThread(item) {
+  if (openThreadId.value === item.id) { openThreadId.value = ''; threadMessages.value = []; return }
+  try {
+    const messages = await api(`/collaboration/handoffs/${item.id}/messages`)
+    openThreadId.value = item.id
+    threadMessages.value = messages
+    threadDraft.value = ''
+    threadRequestKey.value = crypto.randomUUID()
+  } catch (e) { tell(e) }
+}
+async function sendThreadMessage() {
+  if (!openThreadId.value || !threadDraft.value.trim() || threadBusy.value) return
+  threadBusy.value = true
+  try {
+    await post(`/collaboration/handoffs/${openThreadId.value}/messages`, {
+      content: threadDraft.value.trim(), requestKey: threadRequestKey.value,
+    })
+    threadRequestKey.value = crypto.randomUUID()
+    threadDraft.value = ''
+    threadMessages.value = await api(`/collaboration/handoffs/${openThreadId.value}/messages`)
+    await load()
+    Message.success('已发给同事')
+  } catch (e) { tell(e) } finally { threadBusy.value = false }
 }
 const openHandoffCount = computed(() => handoffInbox.value.filter(item => item.status === 'OPEN').length)
 const adminOrders = ref([])
@@ -380,12 +413,17 @@ onUnmounted(stopInboxPolling)
           <div v-for="item in handoffInbox" :key="item.id" class="review-event"><b>{{ item.senderName }} → 我</b> <a-tag :color="item.status==='OPEN'?'orange':'green'">{{ item.status==='OPEN'?'待处理':'已完成' }}</a-tag>
             <p>{{ item.summary }}</p><p class="muted">{{ item.createdAt }}</p>
             <p v-if="item.status==='DONE'">处理结果：{{ item.resolution }}</p>
-            <div v-else class="actions" style="margin-top:10px"><a-input v-model="handoffResolution[item.id]" placeholder="完成后填写结果" style="max-width:520px"/><a-button type="primary" @click="completeHandoff(item)">完成并回执</a-button></div>
+            <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 追问' }}</a-button>
+            <div v-if="openThreadId===item.id" class="handoff-thread"><p v-if="!threadMessages.length" class="muted">暂无补充消息。</p><p v-for="message in threadMessages" :key="message.id"><b>{{ message.authorId===me.id?'我':message.authorName }}：</b>{{ message.content }}</p><div v-if="item.status==='OPEN'" class="actions"><a-input v-model="threadDraft" :max-length="2000" placeholder="向同事追问或补充信息" style="max-width:520px"/><a-button :loading="threadBusy" @click="sendThreadMessage">发送消息</a-button></div></div>
+            <div v-if="item.status==='OPEN'" class="actions" style="margin-top:10px"><a-input v-model="handoffResolution[item.id]" placeholder="完成后填写结果" style="max-width:520px"/><a-button type="primary" @click="completeHandoff(item)">完成并回执</a-button></div>
           </div>
         </div>
         <div class="section-head" style="margin-top:28px"><h2>我发出的交接</h2></div>
         <div class="panel"><p v-if="!handoffSent.length" class="muted">尚未发出交接。</p>
-          <div v-for="item in handoffSent" :key="item.id" class="review-event"><b>我 → {{ item.recipientName }}</b> <a-tag :color="item.status==='OPEN'?'orange':'green'">{{ item.status==='OPEN'?'等待同事':'已回执' }}</a-tag><p>{{ item.summary }}</p><p v-if="item.resolution">结果：{{ item.resolution }}</p></div>
+          <div v-for="item in handoffSent" :key="item.id" class="review-event"><b>我 → {{ item.recipientName }}</b> <a-tag :color="item.status==='OPEN'?'orange':'green'">{{ item.status==='OPEN'?'等待同事':'已回执' }}</a-tag><p>{{ item.summary }}</p><p v-if="item.resolution">结果：{{ item.resolution }}</p>
+            <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 补充' }}</a-button>
+            <div v-if="openThreadId===item.id" class="handoff-thread"><p v-if="!threadMessages.length" class="muted">暂无补充消息。</p><p v-for="message in threadMessages" :key="message.id"><b>{{ message.authorId===me.id?'我':message.authorName }}：</b>{{ message.content }}</p><div v-if="item.status==='OPEN'" class="actions"><a-input v-model="threadDraft" :max-length="2000" placeholder="回答同事的问题或补充信息" style="max-width:520px"/><a-button :loading="threadBusy" @click="sendThreadMessage">发送消息</a-button></div></div>
+          </div>
         </div>
       </template>
 

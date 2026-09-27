@@ -34,6 +34,10 @@ public class CollaborationController {
                              @NotBlank @Size(max=2000) String summary,
                              @NotBlank @Size(max=128) String requestKey) {}
     public record Completion(@NotBlank @Size(max=2000) String resolution) {}
+    public record MessageEntry(String id, String handoffId, String authorId, String authorName,
+                               String content, Instant createdAt) {}
+    public record NewMessage(@NotBlank @Size(max=2000) String content,
+                             @NotBlank @Size(max=128) String requestKey) {}
 
     @GetMapping("/colleagues")
     public List<Colleague> colleagues(@RequestHeader(value="Authorization", required=false) String authorization) {
@@ -110,6 +114,46 @@ public class CollaborationController {
         return one(id, actor);
     }
 
+    @GetMapping("/handoffs/{id}/messages")
+    public List<MessageEntry> messages(@RequestHeader(value="Authorization", required=false) String authorization,
+                                       @PathVariable String id) {
+        var actor = ready(authorization);
+        one(id, actor);
+        return db.query("""
+                select m.id,m.handoff_id,m.author_id,a.display_name as author_name,m.content,m.created_at
+                from collaboration_messages m join members a on a.id=m.author_id
+                where m.handoff_id=? and m.organization_id=? order by m.created_at,m.id
+                """, (rs, row) -> message(rs), id, actor.organizationId());
+    }
+
+    @PostMapping("/handoffs/{id}/messages")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
+    public MessageEntry reply(@RequestHeader(value="Authorization", required=false) String authorization,
+                              @PathVariable String id, @Valid @RequestBody NewMessage input) {
+        var actor = ready(authorization);
+        String content = input.content().trim();
+        String key = input.requestKey().trim();
+        if (content.isEmpty() || key.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Message and request key required");
+        var handoffs = db.query("""
+                select status from collaboration_handoffs where id=? and organization_id=?
+                and (sender_id=? or recipient_id=?) for update
+                """, (rs, row) -> rs.getString("status"), id, actor.organizationId(), actor.id(), actor.id());
+        if (handoffs.size() != 1) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Handoff not found");
+        var previous = db.query("select id,content from collaboration_messages where handoff_id=? and author_id=? and request_key=?",
+                (rs, row) -> new String[]{rs.getString("id"), rs.getString("content")}, id, actor.id(), key);
+        if (!previous.isEmpty()) {
+            if (!content.equals(previous.get(0)[1])) throw new ResponseStatusException(HttpStatus.CONFLICT, "Request key already used");
+            return oneMessage(previous.get(0)[0]);
+        }
+        if (!"OPEN".equals(handoffs.get(0))) throw new ResponseStatusException(HttpStatus.CONFLICT, "Handoff is complete");
+        String messageId = UUID.randomUUID().toString();
+        db.update("insert into collaboration_messages(id,handoff_id,organization_id,author_id,request_key,content,created_at) values (?,?,?,?,?,?,?)",
+                messageId, id, actor.organizationId(), actor.id(), key, content, Timestamp.from(Instant.now()));
+        audit(actor, "collaboration.handoff.message", id);
+        return oneMessage(messageId);
+    }
+
     private AuthService.Actor ready(String authorization) {
         var actor = auth.businessActor(authorization);
         auth.requireReady(actor);
@@ -117,8 +161,9 @@ public class CollaborationController {
     }
 
     private List<Handoff> list(String side, AuthService.Actor actor, boolean prioritizeOpen) {
-        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, h.created_at desc"
-                : "coalesce(h.completed_at,h.created_at) desc, h.created_at desc";
+        String activity = "case when h.status='DONE' then h.completed_at else coalesce((select max(m.created_at) from collaboration_messages m where m.handoff_id=h.id),h.created_at) end";
+        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, " + activity + " desc, h.created_at desc"
+                : activity + " desc, h.created_at desc";
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
                        h.summary,h.status,h.resolution,h.created_at,h.completed_at
@@ -145,6 +190,18 @@ public class CollaborationController {
                 rs.getString("recipient_id"), rs.getString("recipient_name"), rs.getString("summary"),
                 rs.getString("status"), rs.getString("resolution"), rs.getTimestamp("created_at").toInstant(),
                 completed == null ? null : completed.toInstant());
+    }
+
+    private MessageEntry oneMessage(String id) {
+        return db.query("""
+                select m.id,m.handoff_id,m.author_id,a.display_name as author_name,m.content,m.created_at
+                from collaboration_messages m join members a on a.id=m.author_id where m.id=?
+                """, (rs, row) -> message(rs), id).get(0);
+    }
+
+    private MessageEntry message(java.sql.ResultSet rs) throws java.sql.SQLException {
+        return new MessageEntry(rs.getString("id"), rs.getString("handoff_id"), rs.getString("author_id"),
+                rs.getString("author_name"), rs.getString("content"), rs.getTimestamp("created_at").toInstant());
     }
 
     private void audit(AuthService.Actor actor, String action, String id) {
