@@ -112,8 +112,13 @@ class CollaborationFlowTest {
         assertEquals("DONE", done.path("status").asText());
         assertEquals("已核对，两处需修改", call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200)
                 .get(0).path("resolution").asText());
+        JsonNode retry = call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content(complete), 200);
+        assertEquals(done.path("completedAt").asText(), retry.path("completedAt").asText());
+        assertEquals(1, db.queryForObject("select count(*) from audit_events where action=? and target_id=?",
+                Integer.class, "collaboration.handoff.completed", id));
         call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
-                .contentType(MediaType.APPLICATION_JSON).content(complete), 409);
+                .contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"不同的回执\"}"), 409);
         assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where id=?", Integer.class, id));
         String olderOpenId = UUID.randomUUID().toString();
         String organizationId = db.queryForObject("select organization_id from members where id=?", String.class, aId);

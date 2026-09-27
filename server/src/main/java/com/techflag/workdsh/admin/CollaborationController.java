@@ -100,7 +100,12 @@ public class CollaborationController {
         if (input.resolution().trim().isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Resolution required");
         int changed = db.update("update collaboration_handoffs set status='DONE',resolution=?,completed_at=? where id=? and organization_id=? and recipient_id=? and status='OPEN'",
                 input.resolution().trim(), Timestamp.from(Instant.now()), id, actor.organizationId(), actor.id());
-        if (changed != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "Handoff unavailable or already completed");
+        if (changed != 1) {
+            var previous = db.query("select resolution from collaboration_handoffs where id=? and organization_id=? and recipient_id=? and status='DONE'",
+                    (rs, row) -> rs.getString("resolution"), id, actor.organizationId(), actor.id());
+            if (previous.size() == 1 && input.resolution().trim().equals(previous.get(0))) return one(id, actor);
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Handoff unavailable or already completed");
+        }
         audit(actor, "collaboration.handoff.completed", id);
         return one(id, actor);
     }
