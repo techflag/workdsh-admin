@@ -186,6 +186,23 @@ class CollaborationFlowTest {
         assertEquals(100, busySent.size());
         assertEquals(olderOpenId, busySent.get(0).path("id").asText(), "早期交接的新回执必须进入发起人的最近列表");
         assertEquals("迟到的回执", busySent.get(0).path("resolution").asText());
+        String oldQuestionId = UUID.randomUUID().toString();
+        db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                oldQuestionId, organizationId, aId, bId, "old-question", "较早发出的待回答事项", "OPEN",
+                Timestamp.from(Instant.now().minusSeconds(20_000)));
+        db.update("insert into collaboration_messages(id,handoff_id,organization_id,author_id,request_key,content,created_at) values (?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), oldQuestionId, organizationId, bId, "old-question-message", "请补充依据",
+                Timestamp.from(Instant.now().minusSeconds(19_000)));
+        for (int i = 0; i < 101; i++) {
+            db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                    UUID.randomUUID().toString(), organizationId, aId, bId, "new-open-" + i, "等待乙处理", "OPEN",
+                    Timestamp.from(Instant.now().minusSeconds(100 - i)));
+        }
+        JsonNode sentWithQuestion = call(get("/api/collaboration/sent").header("Authorization", "Runtime " + aRuntime), 200);
+        assertEquals(100, sentWithQuestion.size());
+        assertEquals(oldQuestionId, sentWithQuestion.get(0).path("id").asText(),
+                "待发起人回答的旧问题不能被较新的普通交接挤出列表");
+        assertTrue(sentWithQuestion.get(0).path("needsReply").asBoolean());
         call(patch("/api/admin/members/" + bId).header("Authorization", bearer(admin))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"active\":false,\"expectedRevision\":2}"), 200);
         call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 401);

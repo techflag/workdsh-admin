@@ -56,13 +56,13 @@ public class CollaborationController {
     @GetMapping("/inbox")
     public List<Handoff> inbox(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return list("h.recipient_id=?", actor, true);
+        return list("h.recipient_id=?", actor);
     }
 
     @GetMapping("/sent")
     public List<Handoff> sent(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return list("h.sender_id=?", actor, false);
+        return list("h.sender_id=?", actor);
     }
 
     @PostMapping("/handoffs")
@@ -167,10 +167,11 @@ public class CollaborationController {
         return actor;
     }
 
-    private List<Handoff> list(String side, AuthService.Actor actor, boolean prioritizeOpen) {
+    private List<Handoff> list(String side, AuthService.Actor actor) {
         String activity = "case when h.status='DONE' then h.completed_at else coalesce((select max(m.created_at) from collaboration_messages m where m.handoff_id=h.id),h.created_at) end";
-        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, " + activity + " desc, h.created_at desc"
-                : activity + " desc, h.created_at desc";
+        String lastAuthor = "coalesce((select m.author_id from collaboration_messages m where m.handoff_id=h.id order by m.created_at desc,m.id desc limit 1),h.sender_id)";
+        String ordering = "case when h.status='OPEN' and " + lastAuthor + "<>? then 0 else 1 end, "
+                + activity + " desc, h.created_at desc";
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
                        h.summary,h.status,h.resolution,h.created_at,h.completed_at,
@@ -179,7 +180,7 @@ public class CollaborationController {
                 from collaboration_handoffs h
                 join members s on s.id=h.sender_id join members r on r.id=h.recipient_id
                 where h.organization_id=? and """ + " " + side + " order by " + ordering + " limit 100",
-                (rs,n) -> handoff(rs, actor.id()), actor.organizationId(), actor.id());
+                (rs,n) -> handoff(rs, actor.id()), actor.organizationId(), actor.id(), actor.id());
     }
 
     private Handoff one(String id, AuthService.Actor actor) {
