@@ -1,0 +1,7 @@
+server/target/
+server/data/*
+!server/data/.gitkeep
+web/node_modules/
+web/dist/
+.env
+.DS_Store
