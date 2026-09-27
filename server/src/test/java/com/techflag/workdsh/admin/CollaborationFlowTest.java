@@ -2,7 +2,10 @@ package com.techflag.workdsh.admin;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -89,6 +92,20 @@ class CollaborationFlowTest {
         call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
                 .contentType(MediaType.APPLICATION_JSON).content(complete), 409);
         assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where id=?", Integer.class, id));
+        String olderOpenId = UUID.randomUUID().toString();
+        String organizationId = db.queryForObject("select organization_id from members where id=?", String.class, aId);
+        db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                olderOpenId, organizationId, aId, bId, "older-open", "仍需处理的旧交接", "OPEN",
+                Timestamp.from(Instant.now().minusSeconds(10_000)));
+        for (int i = 0; i < 101; i++) {
+            db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,resolution,created_at,completed_at) values (?,?,?,?,?,?,?,?,?,?)",
+                    UUID.randomUUID().toString(), organizationId, aId, bId, "completed-" + i,
+                    "已结束事项", "DONE", "已处理", Timestamp.from(Instant.now().minusSeconds(200 - i)),
+                    Timestamp.from(Instant.now().minusSeconds(100 - i)));
+        }
+        JsonNode busyInbox = call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200);
+        assertEquals(100, busyInbox.size());
+        assertEquals(olderOpenId, busyInbox.get(0).path("id").asText(), "未完成的旧交接不能被已完成记录挤出收件箱");
         call(patch("/api/admin/members/" + bId).header("Authorization", bearer(admin))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"active\":false,\"expectedRevision\":2}"), 200);
         call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 401);

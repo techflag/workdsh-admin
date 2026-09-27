@@ -45,13 +45,13 @@ public class CollaborationController {
     @GetMapping("/inbox")
     public List<Handoff> inbox(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return list("h.recipient_id=?", actor);
+        return list("h.recipient_id=?", actor, true);
     }
 
     @GetMapping("/sent")
     public List<Handoff> sent(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return list("h.sender_id=?", actor);
+        return list("h.sender_id=?", actor, false);
     }
 
     @PostMapping("/handoffs")
@@ -107,13 +107,14 @@ public class CollaborationController {
         return actor;
     }
 
-    private List<Handoff> list(String side, AuthService.Actor actor) {
+    private List<Handoff> list(String side, AuthService.Actor actor, boolean prioritizeOpen) {
+        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, h.created_at desc" : "h.created_at desc";
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
                        h.summary,h.status,h.resolution,h.created_at,h.completed_at
                 from collaboration_handoffs h
                 join members s on s.id=h.sender_id join members r on r.id=h.recipient_id
-                where h.organization_id=? and """ + " " + side + " order by h.created_at desc limit 100",
+                where h.organization_id=? and """ + " " + side + " order by " + ordering + " limit 100",
                 (rs,n) -> handoff(rs), actor.organizationId(), actor.id());
     }
 
