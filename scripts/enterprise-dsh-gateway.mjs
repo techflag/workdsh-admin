@@ -72,8 +72,10 @@ const activeMember = async (instance, grantId) => {
     ]);
     if (!runtimeResponse.ok || !grantResponse.ok) return false;
     const [identity, grant] = await Promise.all([runtimeResponse.json(), grantResponse.json()]);
-    return identity.principalId === instance.memberId && identity.organizationId === instance.organizationId
-      && identity.active === true && grant.memberId === instance.memberId && grant.organizationId === instance.organizationId;
+    return identity.contractVersion === 1 && identity.principalId === instance.memberId
+      && identity.organizationId === instance.organizationId && identity.active === true
+      && grant.grantId === grantId && grant.memberId === instance.memberId
+      && grant.organizationId === instance.organizationId;
   } catch { return false; }
 };
 const proxy = (request, response, instance) => {
