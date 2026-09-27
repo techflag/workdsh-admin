@@ -45,9 +45,9 @@ async function assertAvailable(port) {
   });
 }
 
-async function run(command, args, cwd) {
+async function run(command, args, cwd, env = process.env) {
   try {
-    return await exec(command, args, { cwd, maxBuffer: 4 * 1024 * 1024, timeout: 120_000 });
+    return await exec(command, args, { cwd, env, maxBuffer: 4 * 1024 * 1024, timeout: 120_000 });
   } catch (error) {
     throw new Error(`${command} ${args.join(' ')} failed:\n${String(error.stderr ?? error.message).slice(-3000)}`);
   }
@@ -131,6 +131,18 @@ try {
     ...env, WORKDSH_WEB_PORT: String(ports.web), WORKDSH_ADMIN_URL: origins.admin,
   });
   await waitFor(origins.web, frontend);
+  if (stopRequested) throw new Error('Collaboration demo interrupted');
+
+  console.log('Checking two-member handoff and discussion in the admin browser...');
+  const browserCheck = await run(process.execPath, [join(root, 'scripts/probe-handoff-ui.mjs')], root, {
+    ...env,
+    WORKDSH_SOURCE: source,
+    WORKDSH_ADMIN_URL: origins.admin,
+    WORKDSH_ADMIN_WEB_URL: origins.web,
+    WORKDSH_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
+    WORKDSH_BOOTSTRAP_ADMIN_PASSWORD: adminPassword,
+  });
+  process.stdout.write(browserCheck.stdout);
   if (stopRequested) throw new Error('Collaboration demo interrupted');
 
   console.log('Running the two-member collaboration checks before opening the demo...');
