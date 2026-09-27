@@ -59,7 +59,7 @@ try {
   const [sender, recipient] = people;
   await sender.page.locator('.rail').getByRole('button', { name: '协作交接' }).click();
   await sender.page.getByPlaceholder('选择同组织成员').click();
-  await sender.page.getByText('乙', { exact: true }).last().click();
+  await sender.page.getByText(`乙 · ${recipient.email}`, { exact: true }).last().click();
   const summary = `请复核分析 ${stamp}`;
   await sender.page.getByPlaceholder('写清要对方处理什么、期望怎样回执').fill(summary);
   await sender.page.getByRole('button', { name: '@ 同事并交接' }).click();
@@ -71,12 +71,12 @@ try {
   await recipient.page.getByPlaceholder('完成后填写结果').fill('已核对，建议补充来源');
   await recipient.page.getByRole('button', { name: '完成并回执' }).click();
   await recipient.page.getByText('已回执，发送人可以查看结果').waitFor();
-  await sender.page.getByRole('button', { name: '刷新' }).click();
+  await sender.page.getByText('收到 1 条同事回执').waitFor({ timeout: 20_000 });
   await sender.page.getByText('已核对，建议补充来源').first().waitFor();
   assert.equal((await api('/api/collaboration/sent', { token: (await api('/api/auth/login', {
     method: 'POST', body: { email: sender.email, password: sender.password },
   })).token }))[0].status, 'DONE');
-  console.log('PASS: two browser members send a handoff, receive it, complete it and read the result without an order.');
+  console.log('PASS: two browser members send a handoff, receive it, complete it and show the sender a new reply without an order.');
 } finally {
   if (browser) await browser.close();
   const directory = await api('/api/admin/members', { token: admin });

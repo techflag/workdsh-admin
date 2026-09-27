@@ -38,6 +38,7 @@ let inboxTimer = null
 let inboxPolling = false
 let knownInboxIds = new Set()
 let knownHandoffIds = new Set()
+let knownSentStatuses = new Map()
 let knownOrderStatuses = new Map()
 let authEpoch = 0
 sessionStorage.removeItem('workdsh-admin-token')
@@ -117,6 +118,7 @@ async function load() {
     handoffInbox.value = results[4]
     handoffSent.value = results[5]
     knownHandoffIds = new Set(handoffInbox.value.map(item => item.id))
+    knownSentStatuses = new Map(handoffSent.value.map(item => [item.id, item.status]))
     knownInboxIds = new Set(inbox.value.map(item => item.id))
     audits.value = isAdmin.value ? results[8] : []
     if (isAdmin.value) adminOrders.value = results[7]
@@ -135,14 +137,17 @@ async function pollInbox() {
       && item.status === 'CHANGES_REQUESTED' && knownOrderStatuses.get(item.id) !== 'CHANGES_REQUESTED')
     inbox.value = latest
     const newHandoffs = latestHandoffs.filter(item => !knownHandoffIds.has(item.id))
+    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id) === 'OPEN')
     handoffInbox.value = latestHandoffs
     handoffSent.value = latestSent
     knownHandoffIds = new Set(latestHandoffs.map(item => item.id))
+    knownSentStatuses = new Map(latestSent.map(item => [item.id, item.status]))
     orders.value = latestOrders
     knownInboxIds = new Set(latest.map(item => item.id))
     knownOrderStatuses = new Map(latestOrders.map(item => [item.id, item.status]))
     if (newlyAssigned.length) Message.info(`收到 ${newlyAssigned.length} 项新复核待办`)
     if (newHandoffs.length) Message.info(`收到 ${newHandoffs.length} 条同事交接`)
+    if (newReplies.length) Message.success(`收到 ${newReplies.length} 条同事回执`)
     if (newlyReturned.length) Message.warning(`有 ${newlyReturned.length} 项订单被退回，请刷新详情`)
   } catch (e) {
     if (e.status === 401) {
@@ -161,6 +166,7 @@ function stopInboxPolling() {
   inboxTimer = null
   knownInboxIds = new Set()
   knownHandoffIds = new Set()
+  knownSentStatuses = new Map()
   knownOrderStatuses = new Map()
 }
 async function refresh() { await load(); if (order.value) await openOrder(order.value.id) }
