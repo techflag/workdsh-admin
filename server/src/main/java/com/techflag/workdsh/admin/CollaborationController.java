@@ -108,7 +108,8 @@ public class CollaborationController {
     }
 
     private List<Handoff> list(String side, AuthService.Actor actor, boolean prioritizeOpen) {
-        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, h.created_at desc" : "h.created_at desc";
+        String ordering = prioritizeOpen ? "case when h.status='OPEN' then 0 else 1 end, h.created_at desc"
+                : "coalesce(h.completed_at,h.created_at) desc, h.created_at desc";
         return db.query("""
                 select h.id,h.sender_id,s.display_name as sender_name,h.recipient_id,r.display_name as recipient_name,
                        h.summary,h.status,h.resolution,h.created_at,h.completed_at

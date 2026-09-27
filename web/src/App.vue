@@ -137,7 +137,7 @@ async function pollInbox() {
       && item.status === 'CHANGES_REQUESTED' && knownOrderStatuses.get(item.id) !== 'CHANGES_REQUESTED')
     inbox.value = latest
     const newHandoffs = latestHandoffs.filter(item => !knownHandoffIds.has(item.id))
-    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id) === 'OPEN')
+    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id) !== 'DONE')
     handoffInbox.value = latestHandoffs
     handoffSent.value = latestSent
     knownHandoffIds = new Set(latestHandoffs.map(item => item.id))

@@ -106,6 +106,14 @@ class CollaborationFlowTest {
         JsonNode busyInbox = call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 200);
         assertEquals(100, busyInbox.size());
         assertEquals(olderOpenId, busyInbox.get(0).path("id").asText(), "未完成的旧交接不能被已完成记录挤出收件箱");
+        call(post("/api/collaboration/handoffs/" + olderOpenId + "/complete")
+                .header("Authorization", "Runtime " + bRuntime)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("resolution", "迟到的回执"))), 200);
+        JsonNode busySent = call(get("/api/collaboration/sent").header("Authorization", "Runtime " + aRuntime), 200);
+        assertEquals(100, busySent.size());
+        assertEquals(olderOpenId, busySent.get(0).path("id").asText(), "早期交接的新回执必须进入发起人的最近列表");
+        assertEquals("迟到的回执", busySent.get(0).path("resolution").asText());
         call(patch("/api/admin/members/" + bId).header("Authorization", bearer(admin))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"active\":false,\"expectedRevision\":2}"), 200);
         call(get("/api/collaboration/inbox").header("Authorization", "Runtime " + bRuntime), 401);
