@@ -1,0 +1,299 @@
+package com.techflag.workdsh.admin;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+
+@SpringBootTest(properties = {
+        "spring.datasource.url=jdbc:h2:mem:collaboration-flow;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1",
+        "workdsh.bootstrap.admin-email=admin-collaboration@example.test",
+        "workdsh.bootstrap.admin-password=SafeBootstrapPassword123!"
+})
+@AutoConfigureMockMvc
+class CollaborationFlowTest {
+    @Autowired MockMvc mvc;
+    @Autowired ObjectMapper json;
+    @Autowired JdbcTemplate db;
+    @Autowired AuthService auth;
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void materialBundleIsExactImmutableAndOnlyVisibleToParties() throws Exception {
+        String admin=login("admin-collaboration@example.test","SafeBootstrapPassword123!");
+        var owner=auth.actor(bearer(admin));
+        String password="MaterialTestPassword123!";
+        String a=UUID.randomUUID().toString(),b=UUID.randomUUID().toString(),c=UUID.randomUUID().toString();
+        for(String id:java.util.List.of(a,b,c))db.update("insert into members(id,organization_id,email,display_name,role,password_hash,must_change_password,active,revision) values (?,?,?,?,?,?,false,true,1)",id,owner.organizationId(),id+"@example.test",id,"MEMBER",auth.encode(password));
+        String at=login(a+"@example.test",password),bt=login(b+"@example.test",password),ct=login(c+"@example.test",password);
+        byte[] bytes="SKU,amount\nA,960\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        var file=Map.of("name","analysis.csv","sha256",hash,"data",java.util.Base64.getEncoder().encodeToString(bytes));
+        String key=UUID.randomUUID().toString();
+        String body=json.writeValueAsString(Map.of("recipientId",b,"summary","复核 Excel 分析","requestKey",key,"context","本次提问与结果：960","files",java.util.List.of(file)));
+        String id=call(post("/api/collaboration/materials").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(body),200).path("id").asText();
+        assertEquals(id,call(post("/api/collaboration/materials").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(body),200).path("id").asText());
+        var materials=call(get("/api/collaboration/materials/"+id).header("Authorization",bearer(bt)),200);
+        assertEquals("本次提问与结果：960",materials.path("context").asText());
+        assertArrayEquals(bytes,java.util.Base64.getDecoder().decode(materials.path("files").get(0).path("data").asText()));
+        call(get("/api/collaboration/materials/"+id).header("Authorization",bearer(ct)),404);
+        String changed=body.replace("本次提问与结果：960","另一个结果");
+        call(post("/api/collaboration/materials").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(changed),409);
+        String bad=body.replace(hash,"0".repeat(64)).replace(key,UUID.randomUUID().toString());
+        call(post("/api/collaboration/materials").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(bad),400);
+        db.update("update members set active=false where id=?",b);
+        call(get("/api/collaboration/materials/"+id).header("Authorization",bearer(bt)),401);
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void onlineNotificationsAreRecipientScopedAndIndependentOfHandoffStatus() throws Exception {
+        String suffix=UUID.randomUUID().toString();
+        String admin=login("admin-collaboration@example.test","SafeBootstrapPassword123!");
+        var owner=auth.actor(bearer(admin));
+        String password="OnlineMemberPassword123!";
+        String a=UUID.randomUUID().toString(),b=UUID.randomUUID().toString(),c=UUID.randomUUID().toString();
+        for(String id:java.util.List.of(a,b,c)) db.update("insert into members(id,organization_id,email,display_name,role,password_hash,must_change_password,active,revision) values (?,?,?,?,?,?,false,true,1)",
+                id,owner.organizationId(),id+"@example.test",id,"MEMBER",auth.encode(password));
+        String at=login(a+"@example.test",password),bt=login(b+"@example.test",password),ct=login(c+"@example.test",password);
+        var signed=call(get("/api/auth/me").header("Authorization",bearer(at)),200);
+        assertEquals(a,signed.path("id").asText());
+        call(get("/api/collaboration/inbox").header("Authorization","Runtime retired-credential"),401);
+        String body=json.writeValueAsString(Map.of("recipientId",b,"summary","复核 8×120=960","requestKey",suffix));
+        String handoff=call(post("/api/collaboration/handoffs").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(body),201).path("id").asText();
+        call(post("/api/collaboration/handoffs").header("Authorization",bearer(at)).contentType(MediaType.APPLICATION_JSON).content(body),201);
+        var notices=call(get("/api/collaboration/notifications").header("Authorization",bearer(bt)),200);
+        assertEquals(1,notices.size());assertEquals("HANDOFF",notices.get(0).path("kind").asText());
+        String notice=notices.get(0).path("id").asText();
+        assertEquals(0,call(get("/api/collaboration/notifications").header("Authorization",bearer(at)),200).size());
+        assertEquals(0,call(get("/api/collaboration/notifications").header("Authorization",bearer(ct)),200).size());
+        call(post("/api/collaboration/notifications/"+notice+"/read").header("Authorization",bearer(ct)),404);
+        call(post("/api/collaboration/notifications/"+notice+"/read").header("Authorization",bearer(bt)),200);
+        call(post("/api/collaboration/notifications/"+notice+"/read").header("Authorization",bearer(bt)),200);
+        assertEquals("OPEN",call(get("/api/collaboration/handoffs/"+handoff).header("Authorization",bearer(bt)),200).path("status").asText());
+        call(get("/api/collaboration/handoffs/"+handoff).header("Authorization",bearer(ct)),404);
+        String reply=json.writeValueAsString(Map.of("content","请提供单价来源","requestKey",suffix));
+        call(post("/api/collaboration/handoffs/"+handoff+"/messages").header("Authorization",bearer(bt)).contentType(MediaType.APPLICATION_JSON).content(reply),201);
+        call(post("/api/collaboration/handoffs/"+handoff+"/messages").header("Authorization",bearer(bt)).contentType(MediaType.APPLICATION_JSON).content(reply),201);
+        assertEquals(1,call(get("/api/collaboration/notifications").header("Authorization",bearer(at)),200).size());
+        String completion=json.writeValueAsString(Map.of("resolution","已复核 960"));
+        call(post("/api/collaboration/handoffs/"+handoff+"/complete").header("Authorization",bearer(bt)).contentType(MediaType.APPLICATION_JSON).content(completion),200);
+        call(post("/api/collaboration/handoffs/"+handoff+"/complete").header("Authorization",bearer(bt)).contentType(MediaType.APPLICATION_JSON).content(completion),200);
+        assertEquals(2,call(get("/api/collaboration/notifications").header("Authorization",bearer(at)),200).size());
+        // B is also an initiator, not a fixed recipient role.
+        call(post("/api/collaboration/handoffs").header("Authorization",bearer(bt)).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("recipientId",a,"summary","请反向复核","requestKey",suffix))),201);
+        assertEquals(3,call(get("/api/collaboration/notifications").header("Authorization",bearer(at)),200).size());
+        db.update("update members set active=false where id=?",a);
+        call(get("/api/collaboration/notifications").header("Authorization",bearer(at)),401);
+    }
+
+    @Test
+    void handoffMovesBetweenTwoMembersWithoutOrderAndRespectsIdentity() throws Exception {
+        String admin = login("admin-collaboration@example.test", "SafeBootstrapPassword123!");
+        JsonNode createdA = call(post("/api/admin/members").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("email", "collab-a@example.test", "displayName", "成员甲", "role", "MEMBER"))), 201);
+        JsonNode createdB = call(post("/api/admin/members").header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("email", "collab-b@example.test", "displayName", "成员乙", "role", "MEMBER"))), 201);
+        String aId = createdA.path("member").path("id").asText();
+        String bId = createdB.path("member").path("id").asText();
+        String aFirst = login("collab-a@example.test", createdA.path("temporaryPassword").asText());
+        String bFirst = login("collab-b@example.test", createdB.path("temporaryPassword").asText());
+        call(get("/api/collaboration/contract"), 401);
+        call(get("/api/collaboration/contract").header("Authorization", bearer(bFirst)), 403);
+        call(get("/api/collaboration/inbox").header("Authorization", bearer(bFirst)), 403);
+        changePassword(aFirst, createdA.path("temporaryPassword").asText(), "MemberANewPassword123!");
+        changePassword(bFirst, createdB.path("temporaryPassword").asText(), "MemberBNewPassword123!");
+        String a = login("collab-a@example.test", "MemberANewPassword123!");
+        String b = login("collab-b@example.test", "MemberBNewPassword123!");
+        assertEquals(1, call(get("/api/collaboration/contract")
+                .header("Authorization", bearer(a)), 200).path("contractVersion").asInt());
+
+        JsonNode colleagues = call(get("/api/collaboration/colleagues").header("Authorization", bearer(a)), 200);
+        assertTrue(colleagues.findValuesAsText("id").contains(bId));
+        assertEquals("collab-b@example.test", colleagues.get(0).path("email").asText());
+        assertFalse(colleagues.findValuesAsText("id").contains(aId));
+        String body = json.writeValueAsString(Map.of("recipientId", bId, "summary", "请复核分析结果并反馈", "requestKey", "native-call-1"));
+        JsonNode handoff = call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON).content(body), 201);
+        String id = handoff.path("id").asText();
+        assertEquals(aId, handoff.path("senderId").asText());
+        assertEquals("OPEN", handoff.path("status").asText());
+        assertFalse(handoff.path("needsReply").asBoolean());
+        assertTrue(call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200)
+                .findValuesAsText("id").contains(id));
+        assertEquals(id, call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON).content(body), 201).path("id").asText());
+        String concurrentBody = json.writeValueAsString(Map.of("recipientId", bId,
+                "summary", "并发重试仍只交接一次", "requestKey", "parallel-call-1"));
+        var start = new CountDownLatch(1);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var first = workers.submit(() -> {
+                start.await();
+                return call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                        .contentType(MediaType.APPLICATION_JSON).content(concurrentBody), 201).path("id").asText();
+            });
+            var second = workers.submit(() -> {
+                start.await();
+                return call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                        .contentType(MediaType.APPLICATION_JSON).content(concurrentBody), 201).path("id").asText();
+            });
+            start.countDown();
+            assertEquals(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+            assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where sender_id=? and request_key=?",
+                    Integer.class, aId, "parallel-call-1"));
+        } finally { workers.shutdownNow(); }
+        assertEquals(2, call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200).size());
+        assertEquals(0, call(get("/api/collaboration/inbox").header("Authorization", bearer(a)), 200).size());
+        assertEquals(2, call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200).size());
+        call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("recipientId", aId, "summary", "self", "requestKey", "self"))), 400);
+        String otherOrg = java.util.UUID.randomUUID().toString();
+        String outsiderId = java.util.UUID.randomUUID().toString();
+        db.update("insert into organizations(id,name) values (?,?)", otherOrg, "其他组织");
+        db.update("insert into members(id,organization_id,email,display_name,role,password_hash,must_change_password,active,revision) values (?,?,?,?,?,?,false,true,1)",
+                outsiderId, otherOrg, "outsider-collab@example.test", "外部成员", "MEMBER", auth.encode("OutsiderPassword123!"));
+        call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("recipientId", outsiderId, "summary", "cross org", "requestKey", "cross-org"))), 400);
+        call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("recipientId", bId, "summary", "different", "requestKey", "native-call-1"))), 409);
+        String question = json.writeValueAsString(Map.of("content", "请补充原始计算依据", "requestKey", "question-1"));
+        JsonNode asked = call(post("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(b)).contentType(MediaType.APPLICATION_JSON).content(question), 201);
+        assertEquals(bId, asked.path("authorId").asText());
+        assertTrue(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200).findValuesAsText("id").contains(id));
+        assertTrue(findHandoff(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200), id)
+                .path("needsReply").asBoolean(), "a question from B must flag A's sent handoff for reply");
+        assertFalse(findHandoff(call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200), id)
+                .path("needsReply").asBoolean(), "B should not be asked to answer their own question");
+        assertEquals(asked.path("id").asText(), call(post("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(b)).contentType(MediaType.APPLICATION_JSON).content(question), 201)
+                .path("id").asText(), "network retry must not create a second question");
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"不同问题\",\"requestKey\":\"question-1\"}"), 409);
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"content\":\"8 × 120 = 960，来源为本次计算\",\"requestKey\":\"answer-1\"}"), 201);
+        assertTrue(findHandoff(call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200), id)
+                .path("needsReply").asBoolean(), "A's answer makes the next action B's");
+        assertFalse(findHandoff(call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200), id)
+                .path("needsReply").asBoolean());
+        JsonNode thread = call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(b)), 200);
+        assertEquals(2, thread.size());
+        assertEquals(aId, thread.get(1).path("authorId").asText());
+        assertEquals(2, call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(a)), 200).size());
+        call(get("/api/collaboration/handoffs/" + id + "/messages")
+                .header("Authorization", bearer(admin)), 404);
+        assertEquals(2, db.queryForObject("select count(*) from collaboration_messages where handoff_id=?", Integer.class, id));
+        assertEquals(2, db.queryForObject("select count(*) from audit_events where action=? and target_id=?",
+                Integer.class, "collaboration.handoff.message", id));
+        String complete = json.writeValueAsString(Map.of("resolution", "已核对，两处需修改"));
+        call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON).content(complete), 409);
+        JsonNode done = call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content(complete), 200);
+        assertEquals("DONE", done.path("status").asText());
+        assertFalse(done.path("needsReply").asBoolean());
+        assertEquals("已核对，两处需修改", call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200)
+                .get(0).path("resolution").asText());
+        JsonNode retry = call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content(complete), 200);
+        assertEquals(done.path("completedAt").asText(), retry.path("completedAt").asText());
+        assertEquals(1, db.queryForObject("select count(*) from audit_events where action=? and target_id=?",
+                Integer.class, "collaboration.handoff.completed", id));
+        call(post("/api/collaboration/handoffs/" + id + "/complete").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"resolution\":\"不同的回执\"}"), 409);
+        call(post("/api/collaboration/handoffs/" + id + "/messages").header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"完成后追加\",\"requestKey\":\"late-message\"}"), 409);
+        assertEquals(1, db.queryForObject("select count(*) from collaboration_handoffs where id=?", Integer.class, id));
+        String olderOpenId = UUID.randomUUID().toString();
+        String organizationId = db.queryForObject("select organization_id from members where id=?", String.class, aId);
+        db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                olderOpenId, organizationId, aId, bId, "older-open", "仍需处理的旧交接", "OPEN",
+                Timestamp.from(Instant.now().minusSeconds(10_000)));
+        for (int i = 0; i < 101; i++) {
+            db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,resolution,created_at,completed_at) values (?,?,?,?,?,?,?,?,?,?)",
+                    UUID.randomUUID().toString(), organizationId, aId, bId, "completed-" + i,
+                    "已结束事项", "DONE", "已处理", Timestamp.from(Instant.now().minusSeconds(200 - i)),
+                    Timestamp.from(Instant.now().minusSeconds(100 - i)));
+        }
+        JsonNode busyInbox = call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 200);
+        assertEquals(100, busyInbox.size());
+        assertEquals("OPEN", busyInbox.get(0).path("status").asText());
+        assertTrue(busyInbox.findValuesAsText("id").contains(olderOpenId),
+                "未完成的旧交接不能被已完成记录挤出收件箱");
+        call(post("/api/collaboration/handoffs/" + olderOpenId + "/complete")
+                .header("Authorization", bearer(b))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("resolution", "迟到的回执"))), 200);
+        JsonNode busySent = call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200);
+        assertEquals(100, busySent.size());
+        assertEquals(olderOpenId, busySent.get(0).path("id").asText(), "早期交接的新回执必须进入发起人的最近列表");
+        assertEquals("迟到的回执", busySent.get(0).path("resolution").asText());
+        String oldQuestionId = UUID.randomUUID().toString();
+        db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                oldQuestionId, organizationId, aId, bId, "old-question", "较早发出的待回答事项", "OPEN",
+                Timestamp.from(Instant.now().minusSeconds(20_000)));
+        db.update("insert into collaboration_messages(id,handoff_id,organization_id,author_id,request_key,content,created_at) values (?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(), oldQuestionId, organizationId, bId, "old-question-message", "请补充依据",
+                Timestamp.from(Instant.now().minusSeconds(19_000)));
+        for (int i = 0; i < 101; i++) {
+            db.update("insert into collaboration_handoffs(id,organization_id,sender_id,recipient_id,request_key,summary,status,created_at) values (?,?,?,?,?,?,?,?)",
+                    UUID.randomUUID().toString(), organizationId, aId, bId, "new-open-" + i, "等待乙处理", "OPEN",
+                    Timestamp.from(Instant.now().minusSeconds(100 - i)));
+        }
+        JsonNode sentWithQuestion = call(get("/api/collaboration/sent").header("Authorization", bearer(a)), 200);
+        assertEquals(100, sentWithQuestion.size());
+        assertEquals(oldQuestionId, sentWithQuestion.get(0).path("id").asText(),
+                "待发起人回答的旧问题不能被较新的普通交接挤出列表");
+        assertTrue(sentWithQuestion.get(0).path("needsReply").asBoolean());
+        call(patch("/api/admin/members/" + bId).header("Authorization", bearer(admin))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"active\":false,\"expectedRevision\":2}"), 200);
+        call(get("/api/collaboration/inbox").header("Authorization", bearer(b)), 401);
+        call(post("/api/collaboration/handoffs").header("Authorization", bearer(a))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("recipientId", bId, "summary", "new", "requestKey", "native-call-2"))), 400);
+    }
+
+    private void changePassword(String token, String oldPassword, String newPassword) throws Exception {
+        call(post("/api/auth/change-password").header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("currentPassword", oldPassword, "newPassword", newPassword))), 204);
+    }
+    private JsonNode findHandoff(JsonNode rows, String id) {
+        for (JsonNode row : rows) if (id.equals(row.path("id").asText())) return row;
+        throw new AssertionError("Handoff not found: " + id);
+    }
+    private String login(String email, String password) throws Exception {
+        return call(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("email", email, "password", password))), 200).path("token").asText();
+    }
+    private String bearer(String token) { return "Bearer " + token; }
+    private JsonNode call(org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request, int expected) throws Exception {
+        var response = mvc.perform(request).andReturn().getResponse();
+        assertEquals(expected, response.getStatus(), response.getContentAsString());
+        return response.getContentAsString().isBlank() ? json.createObjectNode() : json.readTree(response.getContentAsString());
+    }
+}

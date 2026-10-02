@@ -1,0 +1,38 @@
+package com.techflag.workdsh.admin;
+
+import java.util.*;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.dao.DuplicateKeyException;
+
+@RestController
+@RequestMapping("/api/admin/organization")
+public class OrganizationController {
+ final JdbcTemplate db; final AuthService auth; final MemberController members;
+ public OrganizationController(JdbcTemplate db,AuthService auth,MemberController members){this.db=db;this.auth=auth;this.members=members;}
+ record Department(String id,String parentId,String name,int revision){}
+ record DepartmentInput(@NotBlank @Size(max=64) String name,String parentId,int expectedRevision){}
+ record Profile(String memberId,String departmentId,String username,String employeeNumber,String jobTitle){}
+ record ProfileInput(String departmentId,@Size(max=64) String username,@Size(max=64) String employeeNumber,@Size(max=64) String jobTitle,@NotBlank @Size(max=64) String displayName,int expectedRevision){}
+ record Policy(String directoryScope,boolean sharingEnabled,int revision){}
+ AuthService.Actor admin(String token){var a=auth.actor(token);auth.requireReady(a);auth.requireAdmin(a);return a;}
+ @GetMapping public Map<String,Object> data(@RequestHeader(value="Authorization",required=false) String token){var a=admin(token);return Map.of("name",db.queryForObject("select name from organizations where id=?",String.class,a.organizationId()),"departments",departments(a.organizationId()),"profiles",db.query("select * from member_profiles where organization_id=?",(r,n)->new Profile(r.getString("member_id"),r.getString("department_id"),r.getString("username"),r.getString("employee_number"),r.getString("job_title")),a.organizationId()),"policy",policy(a.organizationId()));}
+ List<Department> departments(String org){return db.query("select * from departments where organization_id=? order by name",(r,n)->new Department(r.getString("id"),r.getString("parent_id"),r.getString("name"),r.getInt("revision")),org);}
+ void parent(String org,String parent,String self){var all=departments(org);int depth=1;var seen=new HashSet<String>();if(self!=null)seen.add(self);while(parent!=null&&!parent.isBlank()){if(!seen.add(parent))throw bad("部门不能循环引用");final String id=parent;var d=all.stream().filter(x->x.id().equals(id)).findFirst().orElseThrow(()->bad("上级部门不存在"));parent=d.parentId();if(++depth>10)throw bad("部门最多十层");}}
+ @PostMapping("/departments") @Transactional public Department create(@RequestHeader(value="Authorization",required=false) String t,@Valid @RequestBody DepartmentInput v){var a=admin(t);parent(a.organizationId(),v.parentId(),null);String id=UUID.randomUUID().toString();db.update("insert into departments(id,organization_id,parent_id,name,revision) values(?,?,?,?,1)",id,a.organizationId(),blank(v.parentId()),v.name().trim());members.audit(a,"department.created",id);return new Department(id,blank(v.parentId()),v.name().trim(),1);}
+ @PatchMapping("/departments/{id}") @Transactional public Department update(@RequestHeader(value="Authorization",required=false) String t,@PathVariable String id,@Valid @RequestBody DepartmentInput v){var a=admin(t);parent(a.organizationId(),v.parentId(),id);if(db.update("update departments set name=?,parent_id=?,revision=revision+1 where id=? and organization_id=? and revision=?",v.name().trim(),blank(v.parentId()),id,a.organizationId(),v.expectedRevision())!=1)throw conflict();for(var d:departments(a.organizationId()))parent(a.organizationId(),d.parentId(),d.id());members.audit(a,"department.updated",id);return departments(a.organizationId()).stream().filter(d->d.id().equals(id)).findFirst().orElseThrow();}
+ @DeleteMapping("/departments/{id}") @Transactional public void delete(@RequestHeader(value="Authorization",required=false) String t,@PathVariable String id){var a=admin(t);if(db.queryForObject("select count(*) from departments where parent_id=? and organization_id=?",Integer.class,id,a.organizationId())>0||db.queryForObject("select count(*) from member_profiles where department_id=? and organization_id=?",Integer.class,id,a.organizationId())>0)throw bad("请先移走成员和子部门");if(db.update("delete from departments where id=? and organization_id=?",id,a.organizationId())!=1)throw new ResponseStatusException(HttpStatus.NOT_FOUND);members.audit(a,"department.deleted",id);}
+ @PutMapping("/profiles/{id}") @Transactional public Profile profile(@RequestHeader(value="Authorization",required=false) String t,@PathVariable String id,@Valid @RequestBody ProfileInput v){var a=admin(t);var roles=db.queryForList("select role from members where id=? and organization_id=?",String.class,id,a.organizationId());if(roles.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);if(!a.role().equals("OWNER")&&!roles.get(0).equals("MEMBER"))throw new ResponseStatusException(HttpStatus.FORBIDDEN);if(blank(v.departmentId())!=null&&!departments(a.organizationId()).stream().anyMatch(d->d.id().equals(v.departmentId())))throw bad("部门不存在");String username=blank(v.username());if(username!=null){username=username.toLowerCase(Locale.ROOT);if(!username.matches("[a-z0-9_.-]{2,64}")||List.of("a","b","admin").contains(username))throw bad("登录用户名为 2–64 位字母、数字、点、下划线或短横线");}
+ if(db.update("update members set display_name=?,revision=revision+1 where id=? and organization_id=? and revision=?",v.displayName().trim(),id,a.organizationId(),v.expectedRevision())!=1)throw conflict();
+ try{db.update("delete from member_profiles where member_id=? and organization_id=?",id,a.organizationId());db.update("insert into member_profiles(member_id,organization_id,department_id,username,employee_number,job_title) values(?,?,?,?,?,?)",id,a.organizationId(),blank(v.departmentId()),username,blank(v.employeeNumber()),blank(v.jobTitle()));}catch(DuplicateKeyException e){throw bad("登录用户名已被使用");}members.audit(a,"member.profile.updated",id);return new Profile(id,blank(v.departmentId()),username,blank(v.employeeNumber()),blank(v.jobTitle()));}
+ Policy policy(String org){return db.query("select * from organization_policies where organization_id=?",(r,n)->new Policy(r.getString("directory_scope"),r.getBoolean("sharing_enabled"),r.getInt("revision")),org).stream().findFirst().orElse(new Policy("ORGANIZATION",true,0));}
+ @PutMapping("/policy") @Transactional public Policy updatePolicy(@RequestHeader(value="Authorization",required=false) String t,@RequestBody Policy v){var a=admin(t);if(!a.role().equals("OWNER"))throw new ResponseStatusException(HttpStatus.FORBIDDEN);if(!List.of("ORGANIZATION","DEPARTMENT").contains(v.directoryScope()))throw bad("无效通讯录范围");if(v.revision()==0){try{db.update("insert into organization_policies values(?,?,?,1)",a.organizationId(),v.directoryScope(),v.sharingEnabled());}catch(DuplicateKeyException e){throw conflict();}}else if(db.update("update organization_policies set directory_scope=?,sharing_enabled=?,revision=revision+1 where organization_id=? and revision=?",v.directoryScope(),v.sharingEnabled(),a.organizationId(),v.revision())!=1)throw conflict();members.audit(a,"organization.policy.updated",a.organizationId());return policy(a.organizationId());}
+ static String blank(String v){return v==null||v.isBlank()?null:v.trim();}
+ static ResponseStatusException bad(String s){return new ResponseStatusException(HttpStatus.BAD_REQUEST,s);}
+ static ResponseStatusException conflict(){return new ResponseStatusException(HttpStatus.CONFLICT,"数据已变化，请刷新后重试");}
+}

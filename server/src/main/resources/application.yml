@@ -1,0 +1,27 @@
+server:
+  address: ${BIND_ADDRESS:127.0.0.1}
+  port: ${PORT:18890}
+spring:
+  servlet:
+    multipart:
+      max-file-size: 12MB
+      max-request-size: 13MB
+  datasource:
+    url: ${JDBC_URL:jdbc:h2:file:./data/workdsh-admin;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE}
+    username: ${JDBC_USER:sa}
+    password: ${JDBC_PASSWORD:}
+  sql:
+    init:
+      mode: always
+workdsh:
+  web:
+    origin: ${WORKDSH_ADMIN_WEB_ORIGIN:http://127.0.0.1:18891}
+  bootstrap:
+    admin-email: ${WORKDSH_BOOTSTRAP_ADMIN_EMAIL:}
+    admin-password: ${WORKDSH_BOOTSTRAP_ADMIN_PASSWORD:}
+    organization-name: ${WORKDSH_ORGANIZATION_NAME:WorkDSH 企业}
+
+
+  secrets:
+    encryption-key: ${WORKDSH_SECRETS_ENCRYPTION_KEY:}
+    service-key: ${WORKDSH_SECRETS_SERVICE_KEY:}
