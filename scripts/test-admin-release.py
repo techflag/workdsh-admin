@@ -20,6 +20,7 @@ class AdminReleaseTest(unittest.TestCase):
             with zipfile.ZipFile(archive) as z:
                 blobs={n:z.read(n) for n in z.namelist()};manifest=json.loads(blobs['manifest.json'])
             self.assertEqual(packer.KIND,manifest['kind']);self.assertFalse(manifest['memberRuntimeIncluded'])
+            self.assertEqual('workdsh/workdsh-web/deploy/member-process',manifest['nativeProcessSource'])
             self.assertEqual(set(manifest['files'])|{'manifest.json'},set(blobs));self.assertFalse(any('gateway.mjs' in n or '.env' in n or '.test-runtime' in n for n in blobs))
             target=pathlib.Path(td)/'installed';result=installer.install(archive,target)
             self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(),result['archiveSha256']);self.assertTrue((target/'server/workdsh-admin-server.jar').is_file())

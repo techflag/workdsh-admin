@@ -4,7 +4,7 @@
 
 ## 运行与交付边界
 
-企业部署采用单 ECS、一个成员服务器容器，按已认证账号启动一份官方 DSH 原生进程。相同账号的连接复用该进程，各成员有固定身份、Linux UID 和独立文件空间。后台 Java 服务独立运行。主仓库 `workdsh/deploy/member-process` 是启动器、成员网关、数据库会话桥接与 Docker 配方的唯一源码，本仓库只提供后台和登录页/浏览器账户存储隔离资产。
+企业部署采用单 ECS、一个成员服务器容器，按已认证账号启动一份官方 DSH 原生进程。相同账号的连接复用该进程，各成员有固定身份、Linux UID 和独立文件空间。后台 Java 服务独立运行。主仓库 `workdsh/workdsh-web/deploy/member-process` 是启动器、成员网关、数据库会话桥接与 Docker 配方的唯一源码，本仓库只提供后台和登录页/浏览器账户存储隔离资产。
 
 产品官方核心和版本族以 WorkDSH 兼容验证目标为准，当前目标为 `0.2.0-rc.2`；不能把后台重建当成个人、企业与 Desktop 全部升级。使用同一锁定官方完整 Web 与共同功能包，企业身份、存储、授权为显式组合差异，不复制官方 Host、Client 或设置页面，不修改官方源码。企业账号插件随公司 Desktop 安装包提供，仅企业模式启用，个人模式默认不启用；协作、通知等其他插件独立交付。
 
@@ -58,10 +58,11 @@ python3 scripts/pack-admin-release.py --output /private/tmp/workdsh-admin-candid
 成员服务器另从主仓库维护源码构建：
 
 ```sh
+WORKDSH_SOURCE=/absolute/path/to/workdsh/workdsh-web
 node "$WORKDSH_SOURCE/deploy/member-process/prepare-context.mjs" /private/tmp/workdsh-member-build "$PWD"
 ```
 
-具体参数和固定依赖要求以主仓库 `deploy/member-process/README.md` 为准。不得从当前容器、临时 Home 或镜像手工导出启动源码。后台先就绪，再启动成员服务器；公网 TLS、反向代理、数据库备份与恢复、生产开机恢复及完整 Linux 隔离需要目标环境验收。当前源码和单元测试通过不等于 ECS 交付完成。
+具体参数和固定依赖要求以主仓库 `workdsh-web/deploy/member-process/README.md` 为准。不得从当前容器、临时 Home 或镜像手工导出启动源码。后台先就绪，再启动成员服务器；公网 TLS、反向代理、数据库备份与恢复、生产开机恢复及完整 Linux 隔离需要目标环境验收。当前源码和单元测试通过不等于 ECS 交付完成。
 
 ## 企业 Web 与 Desktop 接入
 
