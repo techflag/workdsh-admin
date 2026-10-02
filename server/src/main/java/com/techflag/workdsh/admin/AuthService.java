@@ -53,6 +53,10 @@ public class AuthService {
     }
 
     public Login login(String email, String password) {
+        if (!email.contains("@")) {
+            var matches = db.queryForList("select m.email from member_profiles p join members m on m.id=p.member_id where p.username=? and m.active=true", String.class, email.trim().toLowerCase());
+            if (matches.size()==1) email=matches.get(0);
+        }
         var users = db.query("select id,organization_id,email,display_name,role,password_hash,must_change_password,active from members where email=?",
                 (rs, n) -> Map.<String,Object>of(
                         "id", rs.getString("id"), "org", rs.getString("organization_id"),
@@ -88,23 +92,6 @@ public class AuthService {
                 rs.getString("email"), rs.getString("display_name"), rs.getString("role"),
                 rs.getBoolean("must_change_password")), sha256(token), java.sql.Timestamp.from(Instant.now()));
         if (found.size() != 1) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Login expired");
-        return found.get(0);
-    }
-
-    /** Business APIs may be called by a member's isolated DSH instance. Admin APIs never use this path. */
-    public Actor businessActor(String authorization) {
-        if (authorization == null || !authorization.startsWith("Runtime ")) return actor(authorization);
-        if (authorization.length() > 512 || authorization.length() <= 8) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Runtime credential required");
-        }
-        var found = db.query("""
-                select m.id,m.organization_id,m.email,m.display_name,m.role,m.must_change_password
-                from runtime_credentials c join members m on m.id=c.member_id
-                where c.token_hash=? and c.active=true and m.active=true and m.must_change_password=false
-                """, (rs, n) -> new Actor(rs.getString("id"), rs.getString("organization_id"),
-                rs.getString("email"), rs.getString("display_name"), rs.getString("role"),
-                rs.getBoolean("must_change_password")), sha256(authorization.substring(8)));
-        if (found.size() != 1) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Runtime credential is invalid");
         return found.get(0);
     }
 
@@ -144,6 +131,8 @@ public class AuthService {
             db.update("delete from auth_sessions where token_hash=?", sha256(bearer.substring(7)));
         }
     }
+
+    String authenticatedSessionKey(String bearer) { actor(bearer); return sha256(bearer.substring(7)); }
 
     private static String sha256(String value) {
         try {

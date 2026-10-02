@@ -14,12 +14,14 @@ import org.springframework.web.bind.annotation.*;
 public class AuthController {
     private final AuthService auth;
     private final boolean secureCookie;
-    public AuthController(AuthService auth, @Value("${workdsh.web.origin:http://127.0.0.1:18891}") String webOrigin) {
+    private final org.springframework.jdbc.core.JdbcTemplate db;
+    public AuthController(AuthService auth, org.springframework.jdbc.core.JdbcTemplate db, @Value("${workdsh.web.origin:http://127.0.0.1:18891}") String webOrigin) {
         this.auth = auth;
+        this.db = db;
         this.secureCookie = webOrigin.startsWith("https://");
     }
 
-    public record Credentials(@Email @NotBlank String email, @NotBlank String password) {}
+    public record Credentials(@NotBlank @Size(max=254) String email, @NotBlank @Size(max=512) String password) {}
     public record PasswordChange(@NotBlank String currentPassword, @Size(min=12) String newPassword) {}
 
     @PostMapping("/login")
@@ -32,9 +34,12 @@ public class AuthController {
         response.addHeader("Set-Cookie", cookie(login.token(), 43_200));
         return login.member();
     }
+    public record Account(String id, String organizationId, String organizationName, String email, String displayName, String role, boolean mustChangePassword) {}
     @GetMapping("/me")
-    public AuthService.Actor me(@RequestHeader(value="Authorization", required=false) String bearer) {
-        return auth.actor(bearer);
+    public Account me(@RequestHeader(value="Authorization", required=false) String bearer) {
+        var actor = auth.actor(bearer);
+        var organizationName = db.queryForObject("select name from organizations where id=?", String.class, actor.organizationId());
+        return new Account(actor.id(), actor.organizationId(), organizationName, actor.email(), actor.displayName(), actor.role(), actor.mustChangePassword());
     }
     @PostMapping("/change-password")
     @ResponseStatus(HttpStatus.NO_CONTENT)

@@ -37,7 +37,8 @@ public class MemberController {
     public List<Member> directory(@RequestHeader(value="Authorization", required=false) String bearer) {
         var actor = auth.actor(bearer);
         auth.requireReady(actor);
-        return members(actor.organizationId(), true);
+        return db.query("select id,email,display_name,role,active,must_change_password,revision from members where organization_id=? and active=true and (not exists(select 1 from organization_policies where organization_id=members.organization_id and directory_scope='DEPARTMENT') or coalesce((select department_id from member_profiles where member_id=members.id),'')=coalesce((select department_id from member_profiles where member_id=?),'')) order by display_name",
+                (rs,n)->new Member(rs.getString("id"),rs.getString("email"),rs.getString("display_name"),rs.getString("role"),rs.getBoolean("active"),rs.getBoolean("must_change_password"),rs.getInt("revision")),actor.organizationId(),actor.id());
     }
 
     @GetMapping("/admin/members")
@@ -59,6 +60,7 @@ public class MemberController {
         if (!List.of("ADMIN", "MEMBER").contains(request.role())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid role");
         }
+        if (request.role().equals("ADMIN") && !actor.role().equals("OWNER")) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only owner may appoint admins");
         String id = UUID.randomUUID().toString();
         String temporaryPassword = auth.newTemporaryPassword();
         try {
@@ -84,6 +86,7 @@ public class MemberController {
         if (before.role().equals("OWNER")) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Owner cannot be changed here");
         }
+        if (!actor.role().equals("OWNER") && (before.role().equals("ADMIN") || "ADMIN".equals(change.role()))) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only owner may manage admins");
         String role = change.role() == null ? before.role() : change.role();
         if (!List.of("ADMIN", "MEMBER").contains(role)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid role");
@@ -97,7 +100,6 @@ public class MemberController {
         if (changed != 1) throw new ResponseStatusException(HttpStatus.CONFLICT, "Member changed; refresh first");
         if (!active) {
             db.update("delete from auth_sessions where member_id=?", id);
-            db.update("update runtime_credentials set active=false where member_id=?", id);
         }
         audit(actor, active ? "member.updated" : "member.disabled", id);
         return member(actor.organizationId(), id);

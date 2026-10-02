@@ -1,0 +1,11 @@
+# Explicit opt-in deployment profile. Missing JDBC configuration fails startup.
+# Schema initialization/migration belongs to the maintenance role, not the app.
+spring:
+  datasource:
+    url: ${JDBC_URL}
+    username: ${JDBC_USER}
+    password: ${JDBC_PASSWORD}
+  sql:
+    init:
+      mode: never
+workdsh:

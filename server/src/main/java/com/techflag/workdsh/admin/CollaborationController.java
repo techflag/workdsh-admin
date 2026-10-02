@@ -20,10 +20,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class CollaborationController {
     private final JdbcTemplate db;
     private final AuthService auth;
+    private final DatabaseDialect dialect;
 
-    public CollaborationController(JdbcTemplate db, AuthService auth) {
+    public CollaborationController(JdbcTemplate db, AuthService auth, DatabaseDialect dialect) {
         this.db = db;
         this.auth = auth;
+        this.dialect = dialect;
     }
 
     public record Colleague(String id, String displayName, String email) {}
@@ -40,6 +42,43 @@ public class CollaborationController {
                              @NotBlank @Size(max=128) String requestKey) {}
     public record Contract(int contractVersion) {}
 
+    public record NotificationEntry(String id, String handoffId, String authorName, String kind,
+                                    String preview, Instant createdAt) {}
+
+    @GetMapping("/notifications")
+    public List<NotificationEntry> notifications(@RequestHeader(value="Authorization", required=false) String authorization) {
+        var actor = ready(authorization);
+        return db.query("""
+                select n.id,n.handoff_id,m.display_name,n.kind,n.preview,n.created_at
+                from collaboration_notifications n join members m on m.id=n.author_id
+                where n.organization_id=? and n.recipient_id=? and n.read_at is null
+                order by n.created_at,n.id limit 100
+                """, (rs,row) -> new NotificationEntry(rs.getString("id"),rs.getString("handoff_id"),
+                rs.getString("display_name"),rs.getString("kind"),rs.getString("preview"),
+                rs.getTimestamp("created_at").toInstant()), actor.organizationId(),actor.id());
+    }
+
+    @PostMapping("/notifications/{id}/read")
+    public java.util.Map<String,Boolean> readNotification(@RequestHeader(value="Authorization", required=false) String authorization,
+                                                        @PathVariable String id) {
+        var actor = ready(authorization);
+        int changed = db.update("update collaboration_notifications set read_at=coalesce(read_at,?) where id=? and organization_id=? and recipient_id=?",
+                Timestamp.from(Instant.now()),id,actor.organizationId(),actor.id());
+        if (changed != 1) throw new ResponseStatusException(HttpStatus.NOT_FOUND,"Notification not found");
+        return java.util.Map.of("read",true);
+    }
+
+    @GetMapping("/handoffs/{id}")
+    public Handoff detail(@RequestHeader(value="Authorization", required=false) String authorization,@PathVariable String id) {
+        return one(id,ready(authorization));
+    }
+
+    private void notifyMember(AuthService.Actor actor,String recipient,String handoffId,String kind,String content) {
+        db.update("insert into collaboration_notifications(id,organization_id,recipient_id,author_id,handoff_id,kind,preview,created_at) values (?,?,?,?,?,?,?,?)",
+                UUID.randomUUID().toString(),actor.organizationId(),recipient,actor.id(),handoffId,kind,
+                content.substring(0,Math.min(content.length(),240)),Timestamp.from(Instant.now()));
+    }
+
     @GetMapping("/contract")
     public Contract contract(@RequestHeader(value="Authorization", required=false) String authorization) {
         ready(authorization);
@@ -49,8 +88,8 @@ public class CollaborationController {
     @GetMapping("/colleagues")
     public List<Colleague> colleagues(@RequestHeader(value="Authorization", required=false) String authorization) {
         var actor = ready(authorization);
-        return db.query("select id,display_name,email from members where organization_id=? and active=true and must_change_password=false and id<>? order by display_name,email",
-                (rs, n) -> new Colleague(rs.getString("id"), rs.getString("display_name"), rs.getString("email")), actor.organizationId(), actor.id());
+        return db.query("select id,display_name,email from members where organization_id=? and active=true and must_change_password=false and id<>? and (not exists(select 1 from organization_policies where organization_id=members.organization_id and directory_scope='DEPARTMENT') or coalesce((select department_id from member_profiles where member_id=members.id),'')=coalesce((select department_id from member_profiles where member_id=?),'')) order by display_name,email",
+                (rs, n) -> new Colleague(rs.getString("id"), rs.getString("display_name"), rs.getString("email")), actor.organizationId(), actor.id(),actor.id());
     }
 
     @GetMapping("/inbox")
@@ -72,7 +111,7 @@ public class CollaborationController {
                         @Valid @RequestBody NewHandoff input) {
         var actor = ready(authorization);
         // Serialize sends by this member so two retries with one request key observe the same result.
-        var sender = db.query("select id from members where id=? and organization_id=? and active=true for update",
+        var sender = db.query(dialect.lock("select id from members where id=? and organization_id=? and active=true"),
                 (rs, row) -> rs.getString("id"), actor.id(), actor.organizationId());
         if (sender.isEmpty()) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Member is inactive");
         String recipient = input.recipientId().trim();
@@ -82,6 +121,9 @@ public class CollaborationController {
         Integer count = db.queryForObject("select count(*) from members where id=? and organization_id=? and active=true and must_change_password=false",
                 Integer.class, recipient, actor.organizationId());
         if (count == null || count != 1) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose another active colleague");
+        var policy=db.query("select directory_scope,sharing_enabled from organization_policies where organization_id=?",(rs,n)->new Object[]{rs.getString(1),rs.getBoolean(2)},actor.organizationId());
+        if(!policy.isEmpty()){if(!((Boolean)policy.get(0)[1]))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"企业已关闭新的协作分享");
+            if(policy.get(0)[0].equals("DEPARTMENT")){var own=db.queryForList("select coalesce(department_id,'') from member_profiles where member_id=?",String.class,actor.id());var target=db.queryForList("select coalesce(department_id,'') from member_profiles where member_id=?",String.class,recipient);if(!java.util.Objects.equals(own.isEmpty()?"":own.get(0),target.isEmpty()?"":target.get(0)))throw new ResponseStatusException(HttpStatus.FORBIDDEN,"通讯录范围不允许跨部门分享");}}
         String summary = input.summary().trim();
         String key = input.requestKey().trim();
         if (summary.isEmpty() || key.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Summary and request key required");
@@ -100,6 +142,7 @@ public class CollaborationController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Request key already used");
         }
         audit(actor, "collaboration.handoff.sent", id);
+        notifyMember(actor,recipient,id,"HANDOFF",summary);
         return one(id, actor);
     }
 
@@ -118,6 +161,7 @@ public class CollaborationController {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Handoff unavailable or already completed");
         }
         audit(actor, "collaboration.handoff.completed", id);
+        notifyMember(actor,one(id,actor).senderId(),id,"COMPLETED",input.resolution().trim());
         return one(id, actor);
     }
 
@@ -142,10 +186,10 @@ public class CollaborationController {
         String content = input.content().trim();
         String key = input.requestKey().trim();
         if (content.isEmpty() || key.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Message and request key required");
-        var handoffs = db.query("""
+        var handoffs = db.query(dialect.lock("""
                 select status from collaboration_handoffs where id=? and organization_id=?
-                and (sender_id=? or recipient_id=?) for update
-                """, (rs, row) -> rs.getString("status"), id, actor.organizationId(), actor.id(), actor.id());
+                and (sender_id=? or recipient_id=?)
+                """), (rs, row) -> rs.getString("status"), id, actor.organizationId(), actor.id(), actor.id());
         if (handoffs.size() != 1) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Handoff not found");
         var previous = db.query("select id,content from collaboration_messages where handoff_id=? and author_id=? and request_key=?",
                 (rs, row) -> new String[]{rs.getString("id"), rs.getString("content")}, id, actor.id(), key);
@@ -158,11 +202,13 @@ public class CollaborationController {
         db.update("insert into collaboration_messages(id,handoff_id,organization_id,author_id,request_key,content,created_at) values (?,?,?,?,?,?,?)",
                 messageId, id, actor.organizationId(), actor.id(), key, content, Timestamp.from(Instant.now()));
         audit(actor, "collaboration.handoff.message", id);
+        var handoff = one(id,actor);
+        notifyMember(actor,actor.id().equals(handoff.senderId()) ? handoff.recipientId() : handoff.senderId(),id,"REPLY",content);
         return oneMessage(messageId);
     }
 
     private AuthService.Actor ready(String authorization) {
-        var actor = auth.businessActor(authorization);
+        var actor = auth.actor(authorization);
         auth.requireReady(actor);
         return actor;
     }

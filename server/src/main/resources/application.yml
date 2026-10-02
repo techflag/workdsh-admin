@@ -16,10 +16,12 @@ spring:
 workdsh:
   web:
     origin: ${WORKDSH_ADMIN_WEB_ORIGIN:http://127.0.0.1:18891}
-  dsh-gateway:
-    origin: ${WORKDSH_DSH_GATEWAY_ORIGIN:}
-    secret: ${WORKDSH_DSH_GATEWAY_SECRET:}
   bootstrap:
     admin-email: ${WORKDSH_BOOTSTRAP_ADMIN_EMAIL:}
     admin-password: ${WORKDSH_BOOTSTRAP_ADMIN_PASSWORD:}
     organization-name: ${WORKDSH_ORGANIZATION_NAME:WorkDSH 企业}
+
+
+  secrets:
+    encryption-key: ${WORKDSH_SECRETS_ENCRYPTION_KEY:}
+    service-key: ${WORKDSH_SECRETS_SERVICE_KEY:}

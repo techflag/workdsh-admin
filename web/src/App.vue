@@ -1,471 +1,105 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Message } from '@arco-design/web-vue'
-import { api, post, patch, download } from './api'
-
-const me = ref(null)
-const page = ref('overview')
-const loading = ref(false)
-const error = ref('')
-const loginForm = reactive({ email: '', password: '' })
-const passwordForm = reactive({ currentPassword: '', newPassword: '' })
-const members = ref([])
-const orders = ref([])
-const inbox = ref([])
-const handoffInbox = ref([])
-const handoffSent = ref([])
-const colleagues = ref([])
-const handoffForm = reactive({ recipientId: '', summary: '' })
-const handoffSending = ref(false)
-const handoffRequestKey = ref(crypto.randomUUID())
-watch(() => [handoffForm.recipientId, handoffForm.summary], () => { handoffRequestKey.value = crypto.randomUUID() })
-const handoffResolution = reactive({})
-const openThreadId = ref('')
-const threadMessages = ref([])
-const threadDraft = ref('')
-const threadRequestKey = ref(crypto.randomUUID())
-const threadBusy = ref(false)
-watch(threadDraft, () => { threadRequestKey.value = crypto.randomUUID() })
-const audits = ref([])
-const order = ref(null)
-const reviewEvents = ref([])
-const orderSources = ref([])
-const sourcePreview = ref(null)
-const memberDialog = ref(false)
-const orderDialog = ref(false)
-const secretDialog = ref(false)
-const tempSecret = ref('')
-const secretKind = ref('password')
-const memberForm = reactive({ email: '', displayName: '', role: 'MEMBER' })
-const orderForm = reactive({ customerName: '', sourceType: 'EXCEL', sourceName: '', lines: [] })
-const reviewerId = ref('')
-const returnReason = ref('')
-let inboxTimer = null
-let inboxPolling = false
-let knownInboxIds = new Set()
-let knownHandoffIds = new Set()
-let knownSentStatuses = new Map()
-let knownInboxReplyState = new Map()
-let knownOrderStatuses = new Map()
-let authEpoch = 0
-sessionStorage.removeItem('workdsh-admin-token')
-
-const isAdmin = computed(() => me.value?.role === 'OWNER' || me.value?.role === 'ADMIN')
-const needsReply = (item, side) => item.needsReply ?? (side === 'inbox' && item.status === 'OPEN')
-const returnedCount = computed(() => orders.value.filter(item => item.creatorId === me.value?.id && item.status === 'CHANGES_REQUESTED').length)
-const nav = computed(() => [
-  { id: 'overview', label: '组织概览' },
-  { id: 'handoffs', label: '协作交接' },
-  ...(isAdmin.value ? [{ id: 'members', label: '成员与角色' }, { id: 'admin-orders', label: '订单授权' }] : []),
-  { id: 'orders', label: '我的订单' },
-  { id: 'inbox', label: '复核待办' },
-  ...(isAdmin.value ? [{ id: 'audit', label: '审计记录' }] : []),
-])
-const currentTitle = computed(() => order.value ? `订单 · ${order.value.customerName}` : nav.value.find(x => x.id === page.value)?.label || '工作台')
-
-function tell(e) { error.value = e?.message || '操作失败'; Message.error(error.value) }
-async function login() {
-  error.value = ''; loading.value = true
-  try {
-    const result = await post('/auth/browser-login', loginForm)
-    authEpoch++
-    me.value = result
-    loginForm.password = ''
-    await load()
-    startInboxPolling()
-  } catch(e) { tell(e) } finally { loading.value = false }
-}
-async function logout() {
-  try {
-    await post('/auth/logout', {})
-    stopInboxPolling()
-    authEpoch++; me.value = null; order.value = null
-  } catch (e) { tell(e) }
-}
-async function openDsh() {
-  const tab = window.open('about:blank', '_blank')
-  if (!tab) return tell(new Error('请允许打开新标签页'))
-  try {
-    const launch = await post('/dsh/launch', {})
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = `${launch.gatewayOrigin}/launch`
-    tab.name = `workdsh-${Date.now()}`
-    form.target = tab.name
-    const ticket = document.createElement('input')
-    ticket.type = 'hidden'
-    ticket.name = 'ticket'
-    ticket.value = launch.ticket
-    form.append(ticket)
-    document.body.append(form)
-    form.submit()
-    form.remove()
-  } catch (e) { tab.close(); tell(e) }
-}
-async function changePassword() {
-  try {
-    await post('/auth/change-password', passwordForm)
-    stopInboxPolling()
-    authEpoch++; me.value = null
-    passwordForm.currentPassword = ''; passwordForm.newPassword = ''
-    Message.success('密码已设置，请重新登录')
-  } catch(e) { tell(e) }
-}
-async function load() {
-  if (!me.value || me.value.mustChangePassword) return
-  try {
-    const calls = [api('/members'), api('/orders'), api('/reviews/inbox'),
-      api('/collaboration/colleagues'), api('/collaboration/inbox'), api('/collaboration/sent')]
-    if (isAdmin.value) calls.push(api('/admin/members'), api('/admin/orders'), api('/admin/audit'))
-    const results = await Promise.all(calls)
-    members.value = isAdmin.value ? results[6] : results[0]
-    orders.value = results[1]
-    knownOrderStatuses = new Map(orders.value.map(item => [item.id, item.status]))
-    inbox.value = results[2]
-    colleagues.value = results[3]
-    handoffInbox.value = results[4]
-    handoffSent.value = results[5]
-    knownHandoffIds = new Set(handoffInbox.value.map(item => item.id))
-    knownSentStatuses = new Map(handoffSent.value.map(item => [item.id, { status: item.status, needsReply: needsReply(item, 'sent') }]))
-    knownInboxReplyState = new Map(handoffInbox.value.map(item => [item.id, needsReply(item, 'inbox')]))
-    knownInboxIds = new Set(inbox.value.map(item => item.id))
-    audits.value = isAdmin.value ? results[8] : []
-    if (isAdmin.value) adminOrders.value = results[7]
-  } catch(e) { if (e.status === 401) { authEpoch++; me.value = null } else tell(e) }
-}
-async function pollInbox() {
-  if (!me.value || me.value.mustChangePassword || inboxPolling) return
-  inboxPolling = true
-  const epoch = authEpoch
-  try {
-    const [latest, latestOrders, latestHandoffs, latestSent] = await Promise.all([
-      api('/reviews/inbox'), api('/orders'), api('/collaboration/inbox'), api('/collaboration/sent')])
-    if (authEpoch !== epoch || !me.value) return
-    const newlyAssigned = latest.filter(item => !knownInboxIds.has(item.id))
-    const newlyReturned = latestOrders.filter(item => item.creatorId === me.value.id
-      && item.status === 'CHANGES_REQUESTED' && knownOrderStatuses.get(item.id) !== 'CHANGES_REQUESTED')
-    inbox.value = latest
-    const newHandoffs = latestHandoffs.filter(item => !knownHandoffIds.has(item.id))
-    const newReplies = latestSent.filter(item => item.status === 'DONE' && knownSentStatuses.get(item.id)?.status !== 'DONE')
-    const newQuestions = latestSent.filter(item => needsReply(item, 'sent') && !knownSentStatuses.get(item.id)?.needsReply)
-    const newAnswers = latestHandoffs.filter(item => knownHandoffIds.has(item.id) && needsReply(item, 'inbox')
-      && !knownInboxReplyState.get(item.id))
-    handoffInbox.value = latestHandoffs
-    handoffSent.value = latestSent
-    if (page.value === 'handoffs' && openThreadId.value) {
-      threadMessages.value = await api(`/collaboration/handoffs/${openThreadId.value}/messages`)
-    }
-    knownHandoffIds = new Set(latestHandoffs.map(item => item.id))
-    knownSentStatuses = new Map(latestSent.map(item => [item.id, { status: item.status, needsReply: needsReply(item, 'sent') }]))
-    knownInboxReplyState = new Map(latestHandoffs.map(item => [item.id, needsReply(item, 'inbox')]))
-    orders.value = latestOrders
-    knownInboxIds = new Set(latest.map(item => item.id))
-    knownOrderStatuses = new Map(latestOrders.map(item => [item.id, item.status]))
-    if (newlyAssigned.length) Message.info(`收到 ${newlyAssigned.length} 项新复核待办`)
-    if (newHandoffs.length) Message.info(`收到 ${newHandoffs.length} 条同事交接`)
-    if (newReplies.length) Message.success(`收到 ${newReplies.length} 条同事回执`)
-    if (newQuestions.length + newAnswers.length) Message.info(`有 ${newQuestions.length + newAnswers.length} 条协作消息待回应`)
-    if (newlyReturned.length) Message.warning(`有 ${newlyReturned.length} 项订单被退回，请刷新详情`)
-  } catch (e) {
-    if (e.status === 401) {
-      stopInboxPolling()
-      authEpoch++
-      me.value = null
-      order.value = null
-    }
-  } finally { inboxPolling = false }
-}
-function startInboxPolling() {
-  if (!inboxTimer && me.value && !me.value.mustChangePassword) inboxTimer = window.setInterval(pollInbox, 10_000)
-}
-function stopInboxPolling() {
-  if (inboxTimer) window.clearInterval(inboxTimer)
-  inboxTimer = null
-  knownInboxIds = new Set()
-  knownHandoffIds = new Set()
-  knownSentStatuses = new Map()
-  knownInboxReplyState = new Map()
-  knownOrderStatuses = new Map()
-}
-async function refresh() { await load(); if (order.value) await openOrder(order.value.id) }
-async function sendHandoff() {
-  if (handoffSending.value) return
-  if (!handoffForm.recipientId || !handoffForm.summary.trim()) return Message.warning('请选择同事并填写交接内容')
-  handoffSending.value = true
-  try {
-    await post('/collaboration/handoffs', { recipientId: handoffForm.recipientId,
-      summary: handoffForm.summary.trim(), requestKey: handoffRequestKey.value })
-    handoffForm.recipientId = ''; handoffForm.summary = ''
-    await load(); Message.success('已交接给同事')
-  } catch (e) { tell(e) } finally { handoffSending.value = false }
-}
-async function completeHandoff(item) {
-  const resolution = handoffResolution[item.id]?.trim()
-  if (!resolution) return Message.warning('请填写处理结果')
-  try {
-    await post(`/collaboration/handoffs/${item.id}/complete`, { resolution })
-    delete handoffResolution[item.id]
-    await load(); Message.success('已回执，发送人可以查看结果')
-  } catch (e) { tell(e) }
-}
-async function showThread(item) {
-  if (openThreadId.value === item.id) { openThreadId.value = ''; threadMessages.value = []; return }
-  try {
-    const messages = await api(`/collaboration/handoffs/${item.id}/messages`)
-    openThreadId.value = item.id
-    threadMessages.value = messages
-    threadDraft.value = ''
-    threadRequestKey.value = crypto.randomUUID()
-  } catch (e) { tell(e) }
-}
-async function sendThreadMessage() {
-  if (!openThreadId.value || !threadDraft.value.trim() || threadBusy.value) return
-  threadBusy.value = true
-  try {
-    await post(`/collaboration/handoffs/${openThreadId.value}/messages`, {
-      content: threadDraft.value.trim(), requestKey: threadRequestKey.value,
-    })
-    threadRequestKey.value = crypto.randomUUID()
-    threadDraft.value = ''
-    threadMessages.value = await api(`/collaboration/handoffs/${openThreadId.value}/messages`)
-    await load()
-    Message.success('已发给同事')
-  } catch (e) { tell(e) } finally { threadBusy.value = false }
-}
-const openHandoffCount = computed(() => handoffInbox.value.filter(item => needsReply(item, 'inbox')).length
-  + handoffSent.value.filter(item => needsReply(item, 'sent')).length)
-const adminOrders = ref([])
-async function navigate(id) { page.value = id; order.value = null; reviewEvents.value = []; orderSources.value = []; sourcePreview.value = null; await load() }
-async function openOrder(id) {
-  try {
-    if (order.value?.id !== id) sourcePreview.value = null
-    const [detail, events, sources] = await Promise.all([api(`/orders/${id}`), api(`/orders/${id}/events`), api(`/orders/${id}/sources`)])
-    order.value = detail; reviewEvents.value = events; orderSources.value = sources
-  } catch(e) { tell(e) }
-}
-async function uploadSource(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (!file || !order.value) return
-  try {
-    const form = new FormData()
-    form.set('file', file)
-    form.set('expectedRevision', String(order.value.revision))
-    await api(`/orders/${order.value.id}/sources`, { method: 'POST', body: form })
-    sourcePreview.value = null
-    await openOrder(order.value.id)
-    Message.success('原始文件已保存，复核员可以下载核对')
-  } catch(e) { tell(e) }
-}
-async function previewSource(source) {
-  try { sourcePreview.value = await api(`/orders/${order.value.id}/sources/${source.id}/preview`) }
-  catch(e) { tell(e) }
-}
-async function importLine(row) {
-  try {
-    order.value = await post(`/orders/${order.value.id}/lines/import`, {
-      sourceId: sourcePreview.value.sourceId, locator: row.locator, expectedRevision: order.value.revision,
-    })
-    Message.success(`已加入第 ${row.rowNumber} 行，请核对库存 SKU`)
-    await load()
-  } catch(e) { tell(e) }
-}
-async function downloadSource(source) {
-  try { await download(`/orders/${order.value.id}/sources/${source.id}/download`, source.fileName) }
-  catch(e) { tell(e) }
-}
-async function addMember() {
-  try {
-    const created = await post('/admin/members', memberForm)
-    tempSecret.value = created.temporaryPassword
-    secretKind.value = 'password'
-    memberDialog.value = false; secretDialog.value = true
-    memberForm.email = ''; memberForm.displayName = ''; memberForm.role = 'MEMBER'
-    await load()
-  } catch(e) { tell(e) }
-}
-async function issueRuntime(member) {
-  try {
-    const issued = await post(`/admin/members/${member.id}/runtime-credential`, {})
-    tempSecret.value = issued.runtimeToken
-    secretKind.value = 'runtime'
-    secretDialog.value = true
-    Message.success(`已为 ${member.displayName} 创建 DSH 实例凭据`)
-  } catch(e) { tell(e) }
-}
-async function toggleMember(member) {
-  try {
-    await patch(`/admin/members/${member.id}`, { active: !member.active, expectedRevision: member.revision })
-    await load()
-  } catch(e) { tell(e) }
-}
-async function createOrder() {
-  try {
-    const created = await post('/orders', orderForm)
-    orderDialog.value = false
-    Object.assign(orderForm, { customerName: '', sourceType: 'EXCEL', sourceName: '', lines: [] })
-    await load(); await openOrder(created.id)
-    Message.success('订单已保存')
-  } catch(e) { tell(e) }
-}
-async function submitReview() {
-  if (!reviewerId.value) return Message.warning('请选择复核员')
-  if (!orderSources.value.length) return Message.warning('请先上传原始订单文件')
-  if (!order.value.lines.length) return Message.warning('请先确认至少一条订单行')
-  try {
-    order.value = await post(`/orders/${order.value.id}/submit-review`, { reviewerId: reviewerId.value, expectedRevision: order.value.revision })
-    reviewEvents.value = await api(`/orders/${order.value.id}/events`)
-    await load(); Message.success('已交给复核员')
-  } catch(e) { tell(e) }
-}
-async function decide(decision) {
-  try {
-    order.value = await post(`/orders/${order.value.id}/review`, { decision, comment: returnReason.value, expectedRevision: order.value.revision })
-    reviewEvents.value = await api(`/orders/${order.value.id}/events`)
-    returnReason.value = ''; await load()
-    Message.success(decision === 'APPROVED' ? '复核已通过' : '已退回销售修改')
-  } catch(e) { tell(e) }
-}
-async function updateMatch(line) {
-  try {
-    order.value = await patch(`/orders/${order.value.id}/lines/${line.id}/match`, { internalSku: line.internalSku, expectedRevision: order.value.revision })
-    await load(); Message.success('SKU 匹配已保存')
-  } catch(e) { tell(e) }
-}
-function person(id) { return members.value.find(m => m.id === id)?.displayName || id?.slice(0, 8) || '—' }
-function status(value) { return ({ DRAFT: '待整理', IN_REVIEW: '待复核', CHANGES_REQUESTED: '已退回', APPROVED: '已通过' })[value] || value }
-function roleLabel(value) { return ({ OWNER: '所有者', ADMIN: '管理员', MEMBER: '成员' })[value] || value }
-onMounted(async () => {
-  try { me.value = await api('/auth/me'); await load(); startInboxPolling() }
-  catch { me.value = null }
-})
-onUnmounted(stopInboxPolling)
+import {computed,onMounted,reactive,ref} from 'vue'
+import {Message,Modal} from '@arco-design/web-vue'
+import {IconApps,IconUserGroup,IconSafe,IconSettings,IconHistory,IconFolder,IconSearch,IconPlus,IconDown,IconMore,IconRefresh,IconExport,IconUser} from '@arco-design/web-vue/es/icon'
+import {api,post,patch} from './api'
+const me=ref(null),page=ref('members'),busy=ref(false),error=ref(''),members=ref([]),audits=ref([]),sessions=ref([]),sessionOffset=ref(0),sessionDetail=ref(null),sessionMessages=ref([]),sessionMore=ref(false),sessionNext=ref(0)
+const providerConfig=reactive({revision:0,providers:[]});
+const gateway=reactive({hasAccessKey:false}),gatewayKey=ref('');
+function addProvider(){providerConfig.providers.push({id:'provider-'+Date.now(),displayName:'',baseUrl:'',protocol:'openai-completions',enabled:false,hasKey:false,apiKey:'',models:[]})}
+function addModel(provider){provider.models.push({id:'',displayName:'',contextWindow:null,maxOutputTokens:null,images:false})}
+async function loadModels(){Object.keys(revealedKeys).forEach(k=>delete revealedKeys[k]);try{Object.assign(providerConfig,await run(()=>api('/admin/model-providers')));providerConfig.providers.forEach(p=>p.apiKey='');Object.assign(gateway,await api('/admin/model-gateway'));gatewayKey.value=''}catch{}}
+async function saveModels(){Object.keys(revealedKeys).forEach(k=>delete revealedKeys[k]);saving.value=true;try{if(!gateway.hasAccessKey&&!gatewayKey.value){Message.error('请设置至少 32 位的内部访问 Key');return;}Object.assign(providerConfig,await run(()=>api('/admin/model-providers',{method:'PUT',body:JSON.stringify({expectedRevision:providerConfig.revision,providers:providerConfig.providers,accessKey:gatewayKey.value})})));providerConfig.providers.forEach(p=>p.apiKey='');gatewayKey.value='';Object.assign(gateway,await api('/admin/model-gateway'));Message.success('接口和成员访问配置已保存')}catch{}finally{saving.value=false}}
+const revealedKeys=reactive({});
+async function revealKey(provider){const id=provider?.id||'__internal';if(revealedKeys[id]){delete revealedKeys[id];return;}try{const result=await run(()=>api(provider?'/admin/model-providers/'+encodeURIComponent(provider.id)+'/reveal-key':'/admin/model-gateway/reveal-key',{method:'POST'}));revealedKeys[id]=result.key}catch{}}
+const pluginSnapshot=ref(null),pluginError=ref(''),pluginLoading=ref(false)
+const loginForm=reactive({email:'',password:''}),passwordForm=reactive({currentPassword:'',newPassword:''})
+const organization=ref({name:'WorkDSH 企业',departments:[],profiles:[],policy:{directoryScope:'ORGANIZATION',sharingEnabled:true,revision:0}})
+const department=ref('all'),search=ref(''),statusFilter=ref('all'),recursive=ref(true),selected=ref([])
+const drawer=ref(false),editing=ref(null),saving=ref(false),secret=ref(''),deptModal=ref(false),deptEditing=ref(null)
+const form=reactive({displayName:'',email:'',role:'MEMBER',departmentId:'',username:'',employeeNumber:'',jobTitle:''})
+const deptForm=reactive({name:'',parentId:'',expectedRevision:0})
+const policy=reactive({directoryScope:'ORGANIZATION',sharingEnabled:true,revision:0})
+const owner=computed(()=>me.value?.role==='OWNER'),admin=computed(()=>['OWNER','ADMIN'].includes(me.value?.role))
+const title=computed(()=>({overview:'组织概览',members:'组织架构',roles:'角色管理',visibility:'可见范围与协作',audit:'操作日志',sessions:'成员会话',settings:'企业设置',plugins:'服务器插件',models:'企业模型'})[page.value])
+const profile=id=>organization.value.profiles.find(p=>p.memberId===id)||{}
+const roleLabel=r=>({OWNER:'所有者',ADMIN:'管理员',MEMBER:'成员'})[r]||r
+const departmentName=id=>organization.value.departments.find(d=>d.id===id)?.name||'未分配部门'
+const deptOptions=computed(()=>organization.value.departments.map(d=>({value:d.id,label:d.name})))
+function tree(parent=null){return organization.value.departments.filter(d=>(d.parentId||null)===parent).map(d=>({key:d.id,title:d.name,children:tree(d.id)}))}
+const treeData=computed(()=>[{key:'all',title:organization.value.name,children:[...tree(),{key:'unassigned',title:'未分配部门'}]}])
+function descendants(id){return [id,...organization.value.departments.filter(d=>d.parentId===id).flatMap(d=>descendants(d.id))]}
+const filtered=computed(()=>members.value.filter(m=>{const p=profile(m.id),q=search.value.trim().toLowerCase();return (!q||[m.displayName,m.email,p.username,p.employeeNumber].some(v=>v?.toLowerCase().includes(q)))&&(statusFilter.value==='all'||m.active===(statusFilter.value==='active'))&&(department.value==='all'||(department.value==='unassigned'?!p.departmentId:(recursive.value?descendants(department.value).includes(p.departmentId):p.departmentId===department.value)))}))
+const currentDepartment=computed(()=>organization.value.departments.find(d=>d.id===department.value))
+const canEdit=m=>m.role!=='OWNER'&&(owner.value||m.role==='MEMBER')
+async function run(fn){error.value='';try{return await fn()}catch(e){error.value=e.message;Message.error(e.message);throw e}}
+async function load(){if(!me.value||me.value.mustChangePassword)return;if(!admin.value)return;const [m,o,a]=await Promise.all([api('/admin/members'),api('/admin/organization'),api('/admin/audit')]);members.value=m;organization.value=o;audits.value=a;Object.assign(policy,o.policy)}
+async function login(){busy.value=true;try{await run(async()=>{me.value=await post('/auth/browser-login',loginForm);loginForm.password='';await load()})}catch{}finally{busy.value=false}}
+async function logout(){try{await post('/auth/logout',{});me.value=null;pluginSnapshot.value=null;pluginError.value='';members.value=[];selected.value=[];sessions.value=[];sessionDetail.value=null;sessionMessages.value=[]}catch(e){Message.error(e.message)}}
+async function changePassword(){try{await run(()=>post('/auth/change-password',passwordForm));me.value=null;Object.assign(passwordForm,{currentPassword:'',newPassword:''});Message.success('密码已设置，请重新登录')}catch{}}
+async function refresh(){try{await run(load);if(page.value==='models')await loadModels();if(page.value==='sessions')await loadSessions();if(page.value==='plugins')await loadPlugins()}catch{}}
+function navigate(key){page.value=key;selected.value=[];sessionDetail.value=null;if(key==='models')loadModels();if(key==='sessions')loadSessions();if(key==='plugins')loadPlugins()}
+async function loadPlugins(){pluginSnapshot.value=null;pluginError.value='';pluginLoading.value=true;try{pluginSnapshot.value=await api('/admin/server-plugins')}catch{pluginError.value='运行清单暂不可用，请确认 DSH 已连接；不显示过期或预置清单。'}finally{pluginLoading.value=false}}
+async function loadSessions(){try{sessions.value=await run(()=>api('/admin/sessions?offset='+sessionOffset.value))}catch{}}
+async function viewSession(record,more=false){try{const result=await run(()=>api('/admin/sessions/'+encodeURIComponent(record.memberId)+'/'+encodeURIComponent(record.sessionId)+'?offset='+(more?sessionNext.value:0)));sessionDetail.value=record;sessionMessages.value=more?[...sessionMessages.value,...result.messages]:result.messages;sessionNext.value=result.nextOffset;sessionMore.value=result.hasMore}catch{}}
+function messageText(content){if(typeof content==='string')return content;if(Array.isArray(content))return content.map(part=>part.type==='text'?part.text:part.type==='image'?'[图片]':part.type==='file'?'[附件]':'').filter(Boolean).join('\n');return ''}
+function openMember(m=null){editing.value=m;Object.assign(form,{displayName:m?.displayName||'',email:m?.email||'',role:m?.role||'MEMBER',departmentId:profile(m?.id).departmentId||(department.value!=='all'&&department.value!=='unassigned'?department.value:''),username:profile(m?.id).username||'',employeeNumber:profile(m?.id).employeeNumber||'',jobTitle:profile(m?.id).jobTitle||''});drawer.value=true}
+async function saveMember(){if(!form.displayName.trim()||!form.email.trim())return Message.warning('请填写姓名和邮箱');if(form.username&&(!/^[a-z0-9_.-]{2,64}$/i.test(form.username)||['a','b','admin'].includes(form.username.toLowerCase())))return Message.warning('登录用户名为 2–64 位字母、数字、点、下划线或短横线');saving.value=true;try{await run(async()=>{let m=editing.value;if(!m){const result=await post('/admin/members',{email:form.email,displayName:form.displayName,role:form.role});m=result.member;editing.value=m;secret.value=result.temporaryPassword}else if(m.role!==form.role){m=await patch(`/admin/members/${m.id}`,{role:form.role,expectedRevision:m.revision});editing.value=m}await api(`/admin/organization/profiles/${m.id}`,{method:'PUT',body:JSON.stringify({...form,expectedRevision:m.revision})});drawer.value=false;await load();Message.success('成员资料已保存')})}catch{}finally{saving.value=false}}
+async function toggle(m){Modal.confirm({title:m.active?'停用成员':'启用成员',content:m.active?'停用后，成员登录和 DSH 实例凭据立即失效。重新启用后需重新配置实例凭据。':'允许该成员重新登录。',onOk:async()=>{await run(()=>patch(`/admin/members/${m.id}`,{active:!m.active,expectedRevision:m.revision}));await load()}})}
+async function batch(active){const targets=members.value.filter(m=>selected.value.includes(m.id));if(targets.some(m=>!canEdit(m)))return Message.warning('所选包含无权管理的成员');Modal.confirm({title:`批量${active?'启用':'停用'} ${targets.length} 位成员`,content:active?'允许成员重新登录。':'登录会话和实例凭据将失效。',onOk:async()=>{for(const m of targets)await run(()=>patch(`/admin/members/${m.id}`,{active,expectedRevision:m.revision}));selected.value=[];await load()}})}
+const moveModal=ref(false),moveDepartment=ref('')
+async function moveMembers(){try{await run(async()=>{for(const m of members.value.filter(x=>selected.value.includes(x.id))){if(!canEdit(m))throw Error('无权调整此成员');await api(`/admin/organization/profiles/${m.id}`,{method:'PUT',body:JSON.stringify({...profile(m.id),displayName:m.displayName,departmentId:moveDepartment.value,expectedRevision:m.revision})})}moveModal.value=false;selected.value=[];await load();Message.success('部门已调整')})}catch{}}
+function openDepartment(d=null,parent=''){deptEditing.value=d;Object.assign(deptForm,{name:d?.name||'',parentId:d?.parentId||parent,expectedRevision:d?.revision||0});deptModal.value=true}
+async function saveDepartment(){try{await run(async()=>{if(deptEditing.value)await patch(`/admin/organization/departments/${deptEditing.value.id}`,deptForm);else await post('/admin/organization/departments',deptForm);deptModal.value=false;await load();Message.success('部门已保存')})}catch{}}
+function deleteDepartment(){if(!currentDepartment.value)return;const d=currentDepartment.value;Modal.confirm({title:`删除部门“${d.name}”`,content:'只有没有成员和子部门的空部门可以删除。',onOk:async()=>{await run(()=>api(`/admin/organization/departments/${d.id}`,{method:'DELETE'}));department.value='all';await load()}})}
+async function savePolicy(){try{await run(async()=>{Object.assign(policy,await api('/admin/organization/policy',{method:'PUT',body:JSON.stringify(policy)}));Message.success('权限策略已保存，DSH 同事目录与新分享即时生效');await load()})}catch{}}
+const permissionRows=[{action:'维护部门与普通成员',owner:'允许',admin:'允许',member:'不允许'},{action:'任命、变更管理员',owner:'允许',admin:'不允许',member:'不允许'},{action:'修改通讯录与分享策略',owner:'允许',admin:'不允许',member:'不允许'},{action:'查看组织操作日志',owner:'允许',admin:'允许',member:'不允许'},{action:'查找同事与分享资料',owner:'按组织策略',admin:'按组织策略',member:'按组织策略'},{action:'只读查看本组织成员会话（记录审计）',owner:'允许',admin:'允许',member:'不允许'},{action:'读取协作分享内容',owner:'仅参与双方',admin:'仅参与双方',member:'仅参与双方'}]
+const auditLabel=x=>({'session.content.viewed':'查看会话正文','member.created':'添加成员','member.updated':'更新成员权限','member.disabled':'停用成员','member.profile.updated':'更新成员资料','department.created':'创建部门','department.updated':'编辑部门','department.deleted':'删除部门','organization.policy.updated':'更新组织策略','runtime.credential.revoked':'撤销实例凭据'})[x]||x
+onMounted(async()=>{try{me.value=await api('/auth/me');await load()}catch{me.value=null}})
 </script>
 
 <template>
-  <div v-if="!me" class="login-wrap">
-    <div class="login-card">
-      <div class="brand" style="color:#202633;padding:0 0 28px"><b>W</b> WorkDSH <small>ENTERPRISE CONSOLE</small></div>
-      <h1>登录企业空间</h1><p class="subtitle">进入自己的 DSH，与同事交接事项并接收回执。</p>
-      <form class="form-stack" @submit.prevent="login">
-        <label>邮箱<a-input v-model="loginForm.email" type="email" autocomplete="username" placeholder="name@company.com" /></label>
-        <label>密码<a-input-password v-model="loginForm.password" autocomplete="current-password" placeholder="输入密码" /></label>
-        <a-alert v-if="error" type="error">{{ error }}</a-alert>
-        <a-button type="primary" html-type="submit" long :loading="loading">登录</a-button>
-      </form>
-    </div>
-  </div>
-
-  <div v-else-if="me.mustChangePassword" class="login-wrap">
-    <div class="login-card"><h1>首次登录</h1><p class="subtitle">请把管理员提供的临时密码改为自己的密码。</p>
-      <form class="form-stack" @submit.prevent="changePassword">
-        <label>临时密码<a-input-password v-model="passwordForm.currentPassword" /></label>
-        <label>新密码（至少 12 位）<a-input-password v-model="passwordForm.newPassword" /></label>
-        <a-button type="primary" html-type="submit" long>设置密码</a-button>
-        <a-button long @click="logout">退出</a-button>
-      </form>
-    </div>
-  </div>
-
-  <div v-else class="shell">
-    <aside class="rail">
-      <div class="brand"><b>W</b> WorkDSH <small>ENTERPRISE CONSOLE</small></div>
-      <button v-for="item in nav" :key="item.id" class="nav" :class="{active:page===item.id&&!order}" @click="navigate(item.id)">{{ item.label }}<span v-if="item.id==='inbox' && inbox.length" class="inbox-count">{{ inbox.length }}</span><span v-if="item.id==='handoffs' && openHandoffCount" class="inbox-count">{{ openHandoffCount }}</span><span v-if="item.id==='orders' && returnedCount" class="inbox-count">{{ returnedCount }}</span></button>
-      <div class="rail-footer">{{ me.displayName }} · {{ me.role === 'OWNER' ? '所有者' : me.role === 'ADMIN' ? '管理员' : '成员' }}<br>{{ me.email }}<br><a-button size="mini" type="text" style="margin-top:8px;color:#aab6ca" @click="logout">退出登录</a-button></div>
-    </aside>
-    <main class="main">
-      <div class="topline"><div><h1>{{ currentTitle }}</h1><p class="subtitle">{{ order ? `订单号 ${order.id}` : '同一套企业身份，连接管理后台与业务协作。' }}</p></div><a-button @click="refresh">刷新</a-button></div>
-      <nav class="mobile-nav" aria-label="工作台导航"><button v-for="item in nav" :key="item.id" class="mobile-nav-item" :class="{active:page===item.id&&!order}" @click="navigate(item.id)">{{ item.label }}<span v-if="item.id==='inbox' && inbox.length" class="inbox-count">{{ inbox.length }}</span><span v-if="item.id==='handoffs' && openHandoffCount" class="inbox-count">{{ openHandoffCount }}</span><span v-if="item.id==='orders' && returnedCount" class="inbox-count">{{ returnedCount }}</span></button><button class="mobile-nav-item" @click="logout">退出</button></nav>
-
-      <template v-if="order">
-        <div class="section-head"><a-button type="text" @click="order=null">← 返回列表</a-button><a-tag color="blue">{{ status(order.status) }}</a-tag></div>
-        <div class="order-layout">
-          <div class="panel"><h2>客户订单明细</h2><p class="muted">来源声明：{{ order.sourceType }} · {{ order.sourceName }}。Excel 可预览并逐行确认；PDF 和截图仍需人工录入。</p>
-            <div class="section-head" style="margin-top:22px"><h2>原始订单文件</h2><label v-if="order.creatorId===me.id && ['DRAFT','CHANGES_REQUESTED'].includes(order.status)" class="source-upload">＋ 上传原件<input type="file" accept=".png,.jpg,.jpeg,.pdf,.xls,.xlsx" @change="uploadSource"/></label></div>
-            <p v-if="!orderSources.length" class="muted">尚未上传原件；提交复核前必须提供截图、PDF 或 Excel 文件。</p>
-            <div v-for="source in orderSources" :key="source.id" class="source-row"><div><b>{{ source.fileName }}</b><p class="muted">{{ source.sourceType }} · {{ (source.sizeBytes / 1024).toFixed(1) }} KB · SHA-256 {{ source.sha256.slice(0, 12) }}…</p></div><div class="actions"><a-button v-if="source.sourceType==='EXCEL'" size="small" @click="previewSource(source)">预览表格行</a-button><a-button size="small" @click="downloadSource(source)">下载核对</a-button></div></div>
-            <div v-if="sourcePreview" class="extract-preview"><h3>表格行建议 · {{ orderSources.find(s=>s.id===sourcePreview.sourceId)?.fileName }}</h3><p class="muted">{{ sourcePreview.message }}。客户参考编号不是客户 SKU；价格仅供核对，尚未进入订单。</p><a-table :data="sourcePreview.candidates" :pagination="{pageSize:10}" row-key="locator"><template #columns><a-table-column title="位置"><template #cell="{record}">{{ record.sheetName }} · 第 {{ record.rowNumber }} 行</template></a-table-column><a-table-column title="客户参考编号" data-index="customerReference"/><a-table-column title="客户 SKU"><template #cell="{record}">{{ record.customerSku || '未提供' }}</template></a-table-column><a-table-column title="规格/名称" data-index="customerName"/><a-table-column title="数量" data-index="quantity"/><a-table-column title="原件单价" data-index="unitPriceText"/><a-table-column title="操作"><template #cell="{record}"><a-button size="small" :disabled="order.lines.some(line=>line.sourceId===sourcePreview.sourceId&&line.sourceLocator===record.locator) || order.creatorId!==me.id || !['DRAFT','CHANGES_REQUESTED'].includes(order.status)" @click="importLine(record)">{{ order.lines.some(line=>line.sourceId===sourcePreview.sourceId&&line.sourceLocator===record.locator) ? '已加入' : '加入订单' }}</a-button></template></a-table-column></template></a-table></div>
-            <a-table :data="order.lines" :pagination="false" row-key="id" style="margin-top:18px">
-              <template #columns>
-                <a-table-column title="客户 SKU"><template #cell="{record}">{{ record.customerSku || '未提供' }}</template></a-table-column>
-                <a-table-column title="客户参考编号" data-index="customerReference" />
-                <a-table-column title="客户名称" data-index="customerName" />
-                <a-table-column title="来源位置"><template #cell="{record}">{{ record.sourceLocator || '人工录入' }}</template></a-table-column>
-                <a-table-column title="数量" data-index="quantity" />
-                <a-table-column title="库存 SKU"><template #cell="{record}"><a-input v-if="order.creatorId===me.id && ['DRAFT','CHANGES_REQUESTED'].includes(order.status)" v-model="record.internalSku" placeholder="待确认" size="small"/><span v-else>{{ record.internalSku || '未匹配' }}</span></template></a-table-column>
-                <a-table-column title="操作" :width="85"><template #cell="{record}"><a-button v-if="order.creatorId===me.id && ['DRAFT','CHANGES_REQUESTED'].includes(order.status)" type="text" size="small" @click="updateMatch(record)">保存</a-button></template></a-table-column>
-              </template>
-            </a-table>
-            <div v-if="order.reviewerId===me.id && order.status==='IN_REVIEW'" style="margin-top:28px"><h2>我的复核结论</h2><p v-if="order.lines.some(line=>!line.internalSku)" class="muted">仍有订单行未确认库存 SKU，请退回销售核对。</p><a-textarea v-model="returnReason" placeholder="退回时请说明需要核对的内容" :max-length="1000" style="margin:14px 0"/><div class="actions"><a-button type="primary" :disabled="order.lines.some(line=>!line.internalSku)" @click="decide('APPROVED')">通过</a-button><a-button @click="decide('CHANGES_REQUESTED')">退回修改</a-button></div></div>
-          </div>
-          <div class="order-aside"><h3>流转状态</h3><p>创建人：{{ person(order.creatorId) }}</p><p>复核人：{{ person(order.reviewerId) }}</p><p>当前版本：V{{ order.revision }}</p>
-            <h3 style="margin-top:24px">复核记录</h3><p v-if="!reviewEvents.length" class="muted">尚无复核记录</p><div v-for="event in reviewEvents" :key="event.id" class="review-event"><b>{{ event.action==='SUBMITTED' ? '提交复核' : event.action==='CHANGES_REQUESTED' ? '退回修改' : '复核通过' }}</b><span class="muted"> · {{ person(event.actorId) }}</span><p v-if="event.comment">{{ event.comment }}</p></div>
-            <template v-if="order.creatorId===me.id && ['DRAFT','CHANGES_REQUESTED'].includes(order.status)"><hr style="border:0;border-top:1px solid #dce2ec;margin:20px 0"/><h3>@ 同事复核</h3><p class="muted">确认至少一条订单行并上传原件后，复核员将收到待办，可下载原件核对。</p><a-select v-model="reviewerId" placeholder="选择复核员" style="width:100%"><a-option v-for="m in members.filter(m=>m.id!==me.id&&m.active&&!m.mustChangePassword)" :key="m.id" :value="m.id">{{ m.displayName }}</a-option></a-select><a-button type="primary" long style="margin-top:12px" :disabled="!orderSources.length || !order.lines.length" @click="submitReview">提交复核</a-button></template>
-          </div>
-        </div>
-      </template>
-
-      <template v-else-if="page==='overview'">
-        <div class="stats"><div class="panel"><div class="muted">有效成员</div><div class="stat-value">{{ members.filter(x=>x.active).length }}</div></div><div class="panel"><div class="muted">待我回应的协作</div><div class="stat-value">{{ openHandoffCount }}</div></div><div class="panel"><div class="muted">我发出的交接</div><div class="stat-value">{{ handoffSent.length }}</div></div></div>
-        <div class="section-head"><h2>协作入口</h2></div><div class="panel"><p>在自己的 DSH 实例里分析问题并 @ 同事；对方在自己的实例或这里接收待办、回执结果。订单只是可选示例，不是协作的前提。</p><div class="actions"><a-button type="primary" @click="openDsh">打开我的 DSH</a-button><a-button @click="navigate('handoffs')">查看协作交接</a-button></div></div>
-      </template>
-
-      <template v-else-if="page==='handoffs'">
-        <div class="section-head"><h2>给同事交接</h2></div>
-        <div class="panel form-stack" style="max-width:760px">
-          <p class="muted">也可以在自己的 DSH 会话里直接提出“@ 某位同事处理这件事”。交接记录归成员所有，不共享整段会话。</p>
-          <label>接收人<a-select v-model="handoffForm.recipientId" placeholder="选择同组织成员"><a-option v-for="item in colleagues" :key="item.id" :value="item.id">{{ item.displayName }} · {{ item.email }}</a-option></a-select></label>
-          <label>需要处理的事<a-textarea v-model="handoffForm.summary" :max-length="2000" :auto-size="{minRows:3,maxRows:7}" placeholder="写清要对方处理什么、期望怎样回执"/></label>
-          <div><a-button type="primary" :loading="handoffSending" @click="sendHandoff">@ 同事并交接</a-button></div>
-        </div>
-        <div class="section-head" style="margin-top:28px"><h2>待我处理</h2></div>
-        <div class="panel"><p v-if="!handoffInbox.length" class="muted">暂无同事交接。</p>
-          <div v-for="item in handoffInbox" :key="item.id" class="review-event"><b>{{ item.senderName }} → 我</b> <a-tag :color="needsReply(item,'inbox')?'orange':item.status==='OPEN'?'blue':'green'">{{ needsReply(item,'inbox')?'待你回应':item.status==='OPEN'?'等待同事':'已完成' }}</a-tag>
-            <p>{{ item.summary }}</p><p class="muted">{{ item.createdAt }}</p>
-            <p v-if="item.status==='DONE'">处理结果：{{ item.resolution }}</p>
-            <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 追问' }}</a-button>
-            <div v-if="openThreadId===item.id" class="handoff-thread"><p v-if="!threadMessages.length" class="muted">暂无补充消息。</p><p v-for="message in threadMessages" :key="message.id"><b>{{ message.authorId===me.id?'我':message.authorName }}：</b>{{ message.content }}</p><div v-if="item.status==='OPEN'" class="actions"><a-input v-model="threadDraft" :max-length="2000" placeholder="向同事追问或补充信息" style="max-width:520px"/><a-button :loading="threadBusy" @click="sendThreadMessage">发送消息</a-button></div></div>
-            <div v-if="item.status==='OPEN'" class="actions" style="margin-top:10px"><a-input v-model="handoffResolution[item.id]" placeholder="完成后填写结果" style="max-width:520px"/><a-button type="primary" @click="completeHandoff(item)">完成并回执</a-button></div>
-          </div>
-        </div>
-        <div class="section-head" style="margin-top:28px"><h2>我发出的交接</h2></div>
-        <div class="panel"><p v-if="!handoffSent.length" class="muted">尚未发出交接。</p>
-          <div v-for="item in handoffSent" :key="item.id" class="review-event"><b>我 → {{ item.recipientName }}</b> <a-tag :color="needsReply(item,'sent')?'orange':item.status==='OPEN'?'blue':'green'">{{ needsReply(item,'sent')?'待你回应':item.status==='OPEN'?'等待同事':'已回执' }}</a-tag><p>{{ item.summary }}</p><p v-if="item.resolution">结果：{{ item.resolution }}</p>
-            <a-button size="small" style="margin-top:10px" @click="showThread(item)">{{ openThreadId===item.id?'收起讨论':'查看讨论 / 补充' }}</a-button>
-            <div v-if="openThreadId===item.id" class="handoff-thread"><p v-if="!threadMessages.length" class="muted">暂无补充消息。</p><p v-for="message in threadMessages" :key="message.id"><b>{{ message.authorId===me.id?'我':message.authorName }}：</b>{{ message.content }}</p><div v-if="item.status==='OPEN'" class="actions"><a-input v-model="threadDraft" :max-length="2000" placeholder="回答同事的问题或补充信息" style="max-width:520px"/><a-button :loading="threadBusy" @click="sendThreadMessage">发送消息</a-button></div></div>
-          </div>
-        </div>
-      </template>
-
-      <template v-else-if="page==='members'">
-        <div class="section-head"><h2>成员列表</h2><a-button type="primary" @click="memberDialog=true">＋ 直接添加成员</a-button></div>
-        <div class="panel"><a-table :data="members" :pagination="false" row-key="id"><template #columns><a-table-column title="成员"><template #cell="{record}"><div class="row-title">{{record.displayName}}</div><div class="muted">{{record.email}}</div></template></a-table-column><a-table-column title="角色"><template #cell="{record}">{{roleLabel(record.role)}}</template></a-table-column><a-table-column title="状态"><template #cell="{record}"><a-tag :color="record.active?'green':'gray'">{{record.active?'启用':'停用'}}</a-tag><a-tag v-if="record.mustChangePassword" color="orange">首次登录待改密</a-tag></template></a-table-column><a-table-column title="操作" :width="200"><template #cell="{record}"><div class="actions"><a-button v-if="record.active&&!record.mustChangePassword" size="small" @click="issueRuntime(record)">DSH 凭据</a-button><a-button v-if="record.role!=='OWNER'" size="small" @click="toggleMember(record)">{{record.active?'停用':'启用'}}</a-button></div></template></a-table-column></template></a-table></div>
-      </template>
-
-      <template v-else-if="page==='orders'">
-        <div class="section-head"><h2>我的订单</h2><a-button type="primary" @click="orderDialog=true">＋ 新建订单</a-button></div>
-        <div class="panel"><a-alert type="info" style="margin-bottom:16px">先建订单，再上传截图、PDF 或 Excel。Excel 可预览带来源位置的表格行并逐条加入；截图/PDF 的结构化提取及库存 SKU 建议仍待接入。</a-alert><a-table :data="orders" row-key="id"><template #columns><a-table-column title="客户" data-index="customerName"/><a-table-column title="来源" data-index="sourceType"/><a-table-column title="状态"><template #cell="{record}"><a-tag>{{status(record.status)}}</a-tag></template></a-table-column><a-table-column title="创建人"><template #cell="{record}">{{person(record.creatorId)}}</template></a-table-column><a-table-column title="操作" :width="100"><template #cell="{record}"><a-button type="text" @click="openOrder(record.id)">打开</a-button></template></a-table-column></template></a-table></div>
-      </template>
-
-      <template v-else-if="page==='inbox'">
-        <div class="section-head"><h2>待我复核</h2></div><div class="panel"><a-table :data="inbox" row-key="id"><template #columns><a-table-column title="客户" data-index="customerName"/><a-table-column title="提交人"><template #cell="{record}">{{person(record.creatorId)}}</template></a-table-column><a-table-column title="状态"><template #cell="{record}">{{status(record.status)}}</template></a-table-column><a-table-column title="操作"><template #cell="{record}"><a-button type="primary" size="small" @click="openOrder(record.id)">复核</a-button></template></a-table-column></template></a-table></div>
-      </template>
-
-      <template v-else-if="page==='admin-orders'">
-        <div class="section-head"><h2>组织订单索引</h2></div><div class="panel"><p class="muted">管理员只能看到订单元数据；订单正文须获得明确授权。</p><a-table :data="adminOrders" row-key="id"><template #columns><a-table-column title="客户" data-index="customerName"/><a-table-column title="创建人"><template #cell="{record}">{{person(record.creatorId)}}</template></a-table-column><a-table-column title="状态"><template #cell="{record}">{{status(record.status)}}</template></a-table-column><a-table-column title="订单 ID" data-index="id"/></template></a-table></div>
-      </template>
-
-      <template v-else-if="page==='audit'">
-        <div class="section-head"><h2>最近操作</h2></div><div class="panel"><a-table :data="audits" row-key="id"><template #columns><a-table-column title="时间" data-index="occurredAt"/><a-table-column title="成员"><template #cell="{record}">{{person(record.actorId)}}</template></a-table-column><a-table-column title="动作" data-index="action"/><a-table-column title="对象" data-index="targetId"/></template></a-table></div>
-      </template>
-    </main>
-  </div>
-
-  <a-modal v-model:visible="memberDialog" title="直接添加成员" @ok="addMember"><div class="form-stack"><label>邮箱<a-input v-model="memberForm.email" type="email"/></label><label>姓名<a-input v-model="memberForm.displayName"/></label><label>组织角色<a-select v-model="memberForm.role"><a-option value="MEMBER">成员</a-option><a-option value="ADMIN">管理员</a-option></a-select></label><p class="muted">添加后生成一次性显示的临时密码，成员首次登录时自行修改。</p></div></a-modal>
-  <a-modal v-model:visible="secretDialog" :title="secretKind==='password'?'成员已添加':'DSH 实例凭据已创建'" :footer="false" @cancel="tempSecret=''">
-    <p v-if="secretKind==='password'">请通过安全渠道把临时密码交给成员。关闭后不会再次显示。</p>
-    <p v-else>仅供该成员的一个 DSH 实例使用。通过服务端配置注入，勿放入浏览器或聊天记录；关闭后不会再次显示。</p>
-    <code class="credential">{{tempSecret}}</code><a-button type="primary" style="margin-top:15px" @click="secretDialog=false;tempSecret=''">我已记录</a-button>
-  </a-modal>
-  <a-modal v-model:visible="orderDialog" title="新建订单" width="920px" @ok="createOrder"><div class="form-stack"><label>客户名称<a-input v-model="orderForm.customerName"/></label><div class="actions"><label style="flex:1">主要来源类型<a-select v-model="orderForm.sourceType"><a-option value="SCREENSHOT">截图</a-option><a-option value="PDF">PDF</a-option><a-option value="EXCEL">Excel</a-option></a-select></label><label style="flex:2">来源备注（人工填写）<a-input v-model="orderForm.sourceName" placeholder="例如邮件主题或文件名"/></label></div><p class="muted">可先创建空订单，再上传原件。Excel 表格行需逐条确认后加入；客户未提供 SKU 时保持空白，设备编号填在“客户参考编号”。</p><div><b>人工补录订单行（可选）</b><div v-for="(line,index) in orderForm.lines" :key="index" class="line" style="margin-top:10px"><a-input v-model="line.customerSku" placeholder="客户 SKU（可空）"/><a-input v-model="line.customerReference" placeholder="客户参考编号"/><a-input v-model="line.customerName" placeholder="规格/名称"/><a-input-number v-model="line.quantity" :min="1"/><a-input v-model="line.internalSku" placeholder="库存 SKU（可空）"/></div><a-button type="text" style="margin-top:8px" @click="orderForm.lines.push({customerSku:'',customerReference:'',customerName:'',quantity:1,internalSku:''})">＋ 添加人工订单行</a-button></div></div></a-modal>
+<div v-if="!me||me.mustChangePassword" class="login-wrap"><section class="login-card"><div class="brand"><img class="brand-mark" src="/workdsh-mark.svg" alt="WorkDSH"/><strong>WorkDSH</strong><span class="brand-divider"></span><span>企业控制台</span></div><h1>{{me?'设置登录密码':'登录企业控制台'}}</h1><p class="muted">管理组织成员、部门及协作权限</p><form class="form-stack" @submit.prevent="me?changePassword():login()"><template v-if="!me"><label>账号<a-input v-model="loginForm.email" autocomplete="username" placeholder="邮箱或登录用户名"/></label><label>密码<a-input-password v-model="loginForm.password" autocomplete="current-password" placeholder="输入密码"/></label></template><template v-else><label>临时密码<a-input-password v-model="passwordForm.currentPassword"/></label><label>新密码（至少 12 位）<a-input-password v-model="passwordForm.newPassword"/></label></template><a-alert v-if="error" type="error">{{error}}</a-alert><a-button type="primary" html-type="submit" long :loading="busy">{{me?'设置密码':'登录'}}</a-button></form></section></div>
+<div v-else class="console">
+<header class="header"><div class="brand"><img class="brand-mark" src="/workdsh-mark.svg" alt="WorkDSH"/><strong>WorkDSH</strong><span class="brand-divider"></span><span>企业控制台</span></div><div class="header-right"><a-tag color="blue">{{organization.name}}</a-tag><a-dropdown @select="logout"><button class="account-menu"><a-avatar :size="28">{{me.displayName.slice(0,1)}}</a-avatar>{{me.displayName}}<icon-down/></button><template #content><a-doption value="logout">退出登录</a-doption></template></a-dropdown></div></header>
+<aside class="sidebar"><a-menu :selected-keys="[page]" :default-open-keys="['organization','security']" @menu-item-click="navigate"><a-menu-item key="overview"><template #icon><icon-apps/></template>组织概览</a-menu-item><a-sub-menu v-if="admin" key="organization"><template #icon><icon-user-group/></template><template #title>组织与成员</template><a-menu-item key="members">组织架构</a-menu-item><a-menu-item key="roles">角色管理</a-menu-item><a-menu-item key="visibility">可见范围与协作</a-menu-item></a-sub-menu><a-sub-menu v-if="admin" key="security"><template #icon><icon-safe/></template><template #title>安全中心</template><a-menu-item key="audit">操作日志</a-menu-item><a-menu-item key="sessions">成员会话</a-menu-item></a-sub-menu><a-menu-item v-if="admin" key="plugins"><template #icon><icon-apps/></template>服务器插件</a-menu-item><a-menu-item v-if="admin" key="models"><template #icon><icon-settings/></template>企业模型</a-menu-item><a-menu-item v-if="admin" key="settings"><template #icon><icon-settings/></template>企业设置</a-menu-item></a-menu><div class="sidebar-bottom"><a-avatar :size="32">W</a-avatar><div>{{organization.name}}<small>{{roleLabel(me.role)}}</small></div></div></aside>
+<main class="workspace"><div class="page-heading"><div><div class="breadcrumb">企业控制台 / {{page==='members'?'组织与成员':title}}</div><h1>{{title}}</h1></div><a-button @click="refresh"><template #icon><icon-refresh/></template>刷新</a-button></div>
+<a-alert v-if="!admin" type="info">你是普通成员，无权访问组织管理。请在 DSH 中使用企业协作。<a-button style="margin-left:16px" @click="openDsh">打开我的 DSH</a-button></a-alert>
+<template v-else-if="page==='members'">
+<section class="organization-layout"><aside class="department-pane"><div class="pane-title"><strong>部门</strong><a-button type="text" size="small" @click="openDepartment()"><template #icon><icon-plus/></template>添加</a-button></div><a-input-search v-model="search" placeholder="搜索人员 / 登录用户名" allow-clear/><div class="department-tree"><a-tree :data="treeData" :selected-keys="[department]" :default-expand-all="true" block-node @select="keys=>{department=keys[0]||'all';selected=[]}"><template #icon><icon-folder/></template></a-tree></div><div v-if="currentDepartment" class="department-actions"><a-button size="small" @click="openDepartment(null,currentDepartment.id)">添加子部门</a-button><a-button size="small" @click="openDepartment(currentDepartment)">编辑</a-button><a-button size="small" status="danger" @click="deleteDepartment">删除</a-button></div><p class="department-footnote">{{organization.departments.length}} 个部门 · 最多 10 层</p></aside>
+<div class="member-pane"><div class="member-heading"><h2>{{department==='all'?organization.name:department==='unassigned'?'未分配部门':currentDepartment?.name}}</h2><span class="muted">成员 {{filtered.length}} 人</span><span class="selection-count" v-if="selected.length">已选 {{selected.length}} 人</span></div><div class="table-toolbar"><div class="toolbar-filters"><a-select v-model="statusFilter" style="width:116px"><a-option value="all">全部状态</a-option><a-option value="active">已启用</a-option><a-option value="disabled">已停用</a-option></a-select><a-checkbox v-if="currentDepartment" v-model="recursive">包含子部门</a-checkbox></div><div class="toolbar-actions"><a-dropdown :disabled="!selected.length" @select="key=>key==='move'?moveModal=true:batch(key==='enable')"><a-button :disabled="!selected.length">批量操作 <icon-down/></a-button><template #content><a-doption value="move">调整部门</a-doption><a-doption value="enable">批量启用</a-doption><a-doption value="disable">批量停用</a-doption></template></a-dropdown><a-button type="primary" @click="openMember()"><template #icon><icon-plus/></template>添加成员</a-button></div></div>
+<a-table :data="filtered" row-key="id" v-model:selected-keys="selected" :row-selection="{type:'checkbox',showCheckedAll:true}" :pagination="{pageSize:10,showTotal:true,showPageSize:true}" :bordered="false" :scroll="{x:840}" size="medium" stripe><template #columns><a-table-column title="姓名" :width="190"><template #cell="{record}"><div class="member-cell"><a-avatar :size="32" :class="record.active?'':'inactive-avatar'">{{record.displayName.slice(0,1)}}</a-avatar><div><strong>{{record.displayName}}</strong><small>{{profile(record.id).jobTitle||'—'}}</small></div><a-tag v-if="record.role==='OWNER'" size="small">所有者</a-tag></div></template></a-table-column><a-table-column title="部门" :width="110"><template #cell="{record}">{{departmentName(profile(record.id).departmentId)}}</template></a-table-column><a-table-column title="登录账号" :width="190"><template #cell="{record}"><div>{{profile(record.id).username||record.email}}</div><small class="muted" v-if="profile(record.id).username">{{record.email}}</small></template></a-table-column><a-table-column title="角色" :width="85"><template #cell="{record}">{{roleLabel(record.role)}}</template></a-table-column><a-table-column title="状态" :width="85"><template #cell="{record}"><span class="status-dot" :class="{disabled:!record.active}"></span>{{record.active?'已启用':'已停用'}}</template></a-table-column><a-table-column title="操作" :width="140" fixed="right"><template #cell="{record}"><a-button type="text" size="small" :disabled="!canEdit(record)" @click="openMember(record)">编辑</a-button><a-dropdown @select="()=>toggle(record)"><a-button type="text" size="small" :disabled="!canEdit(record)">更多<icon-down/></a-button><template #content><a-doption value="toggle">{{record.active?'停用成员':'启用成员'}}</a-doption></template></a-dropdown></template></a-table-column></template><template #empty><a-empty description="暂无符合条件的成员"/></template></a-table>
+</div></section></template>
+<template v-else-if="page==='overview'"><div class="stats"><section class="stat"><icon-user-group/><span>组织成员</span><strong>{{members.length}}</strong><small>{{members.filter(m=>m.active).length}} 人已启用</small></section><section class="stat"><icon-folder/><span>组织部门</span><strong>{{organization.departments.length}}</strong><small>按部门管理人员归属</small></section><section class="stat"><icon-safe/><span>管理员</span><strong>{{members.filter(m=>m.role!=='MEMBER').length}}</strong><small>含组织所有者</small></section></div><section class="content-panel"><h2>组织管理</h2><p class="muted">成员身份由企业服务统一管理，DSH 通过企业身份插件接入。</p><div class="quick-actions"><a-button @click="navigate('members')">管理组织架构</a-button><a-button @click="navigate('roles')">查看角色权限</a-button><a-button @click="navigate('visibility')">配置协作范围</a-button></div></section></template>
+<section v-else-if="page==='roles'" class="content-panel"><h2>组织角色与权限</h2><p class="muted">当前采用三个固定角色。管理员可只读查看本组织成员会话并记录审计；普通成员只能访问自己的会话。</p><a-table :data="permissionRows" :pagination="false" :bordered="false"><template #columns><a-table-column title="权限项" data-index="action"/><a-table-column title="所有者" data-index="owner"/><a-table-column title="管理员" data-index="admin"/><a-table-column title="普通成员" data-index="member"/></template></a-table><p class="muted">在组织架构中编辑成员角色。只有所有者可以任命或调整管理员。</p></section>
+<section v-else-if="page==='visibility'" class="content-panel policy-panel"><h2>通讯录与协作范围</h2><p class="muted">影响 DSH 会话中 @ 同事目录及新的分享请求，由服务端执行。</p><div class="policy-row"><div><h3>同事可见范围</h3><p>选择成员能查找到哪些同事</p></div><a-radio-group v-model="policy.directoryScope" :disabled="!owner"><a-radio value="ORGANIZATION">全组织成员</a-radio><a-radio value="DEPARTMENT">仅同部门成员</a-radio></a-radio-group></div><div class="policy-row"><div><h3>允许新的协作分享</h3><p>关闭后不能创建新分享；已有分享仍仅双方可查看</p></div><a-switch v-model="policy.sharingEnabled" :disabled="!owner"/></div><a-alert>同部门按主部门判断，不包含子部门；未分配部门的成员互相可见。停用成员立即从通讯录移除。</a-alert><div class="policy-footer"><a-button type="primary" :disabled="!owner" @click="savePolicy">保存策略</a-button><span class="muted">仅组织所有者可修改</span></div></section>
+<section v-else-if="page==='plugins'" class="content-panel"><h2>服务器插件</h2><p class="muted">只读运行信息。安装、升级和卸载由服务器运维通过官方 CLI 完成。</p><a-spin v-if="pluginLoading"/><a-alert v-else-if="pluginError" type="warning">{{pluginError}}</a-alert><template v-else-if="pluginSnapshot"><p class="muted">采集时间：{{new Date(pluginSnapshot.observedAt).toLocaleString()}}</p><a-table :data="pluginSnapshot.entries" :bordered="false" :pagination="{pageSize:20}"><template #columns><a-table-column title="插件包" data-index="packageName"/><a-table-column title="版本" data-index="version"/><a-table-column title="启用"><template #cell="{record}">{{record.enabled?'已启用':'未启用'}}</template></a-table-column><a-table-column title="运行状态" data-index="phase"/></template></a-table></template></section>
+<section v-else-if="page==='models'" class="content-panel model-panel">
+<div class="provider-heading"><div><h2>企业模型 API</h2><p class="muted">管理公司模型接口。成员通过 DSH 官方「自定义模型 API」连接内部接口。</p></div><a-button @click="addProvider">添加接口</a-button></div>
+<form class="model-form" @submit.prevent="saveModels">
+<a-empty v-if="!providerConfig.providers.length" description="尚未配置模型接口，点击添加接口开始"/>
+<article v-for="(provider,index) in providerConfig.providers" :key="index" class="provider-card">
+<div class="provider-heading"><h3>{{provider.displayName||'新模型接口'}}</h3><a-space><a-switch v-model="provider.enabled" aria-label="启用此接口"/><a-button type="text" status="danger" @click="providerConfig.providers.splice(index,1)">移除接口</a-button></a-space></div>
+<div class="provider-grid"><div class="model-field"><span class="field-label">接口 ID</span><a-input v-model="provider.id" :disabled="provider.hasKey" aria-label="接口 ID" placeholder="company-deepseek"/><small class="muted">小写字母开头，支持数字、短横线和下划线。</small></div><div class="model-field"><span class="field-label">显示名称</span><a-input v-model="provider.displayName" aria-label="显示名称" placeholder="公司 DeepSeek"/></div></div>
+<div class="model-field"><span class="field-label">上游 API 地址</span><a-input v-model="provider.baseUrl" aria-label="上游 API 地址" placeholder="https://api.deepseek.com"/></div>
+<div class="model-field"><span class="field-label">供应商 API Key</span><a-input-password v-model="provider.apiKey" aria-label="供应商 API Key" :placeholder="provider.hasKey?'已配置，留空保留原密钥':'输入供应商 API Key'" autocomplete="new-password"/><div v-if="provider.hasKey"><a-button size="small" @click="revealKey(provider)">{{revealedKeys[provider.id]?'隐藏已保存 Key':'查看已保存 Key'}}</a-button><code v-if="revealedKeys[provider.id]" class="revealed-key">{{revealedKeys[provider.id]}}</code></div></div>
+<div class="model-field"><span class="field-label">API 协议</span><a-radio-group v-model="provider.protocol" type="button" aria-label="API 协议"><a-radio value="openai-completions">OpenAI Chat Completions</a-radio><a-radio value="anthropic-messages">Anthropic Messages</a-radio></a-radio-group><small class="muted">选择上游支持的协议；成员配置该模型时选择同一协议。</small></div>
+<div class="provider-heading"><h4>模型目录</h4><a-button size="small" @click="addModel(provider)">添加模型</a-button></div>
+<p v-if="!provider.models.length" class="muted">启用接口前，请添加至少一个模型。</p>
+<div v-for="(model,modelIndex) in provider.models" :key="modelIndex" class="model-catalog-row">
+<div class="provider-grid"><div class="model-field"><span class="field-label">模型 ID</span><a-input v-model="model.id" aria-label="模型 ID" placeholder="deepseek-flash"/></div><div class="model-field"><span class="field-label">模型名称</span><a-input v-model="model.displayName" aria-label="模型名称" placeholder="DeepSeek Flash"/></div><div class="model-field"><span class="field-label">上下文窗口（可选）</span><a-input-number v-model="model.contextWindow" :min="1" :max="100000000" aria-label="上下文窗口" placeholder="例如 256000"/></div><div class="model-field"><span class="field-label">最大输出 token（可选）</span><a-input-number v-model="model.maxOutputTokens" :min="1" :max="100000000" aria-label="最大输出 token" placeholder="例如 32000"/></div></div>
+<div class="provider-heading"><a-checkbox v-model="model.images">支持图片输入</a-checkbox><a-button type="text" status="danger" @click="provider.models.splice(modelIndex,1)">移除模型</a-button></div></div>
+<small class="muted">已启用接口的模型 ID 不可重复；目录参数用于描述模型能力。</small>
+</article>
+<div class="model-section"><h3>成员访问</h3><p class="muted">供应商密钥只在服务器使用。内部 Key 供成员调用，不能登录管理后台。</p><div class="model-field"><span class="field-label">内部访问 Key</span><a-input-password v-model="gatewayKey" aria-label="内部访问 Key" :placeholder="gateway.hasAccessKey?'已配置，留空保留内部 Key':'设置至少 32 位的内部访问 Key'" autocomplete="new-password"/><div v-if="gateway.hasAccessKey"><a-button size="small" @click="revealKey()">{{revealedKeys.__internal?'隐藏已保存 Key':'查看已保存 Key'}}</a-button><code v-if="revealedKeys.__internal" class="revealed-key">{{revealedKeys.__internal}}</code></div><small class="muted">更换后旧 Key 立即失效。</small></div><div class="model-endpoint"><span>内部 API 路径</span><code>/api/model-gateway/v1</code></div><small class="muted">在此路径前加服务器对成员开放的地址。成员可获取模型目录，再选择相应接口协议。</small></div>
+<div class="model-actions"><a-button type="primary" html-type="submit" :loading="saving">保存配置</a-button></div>
+</form></section><section v-else-if="page==='sessions'" class="content-panel"><h2>成员会话</h2><p class="muted">管理员可只读查看本组织成员的聊天正文，查看会记录操作日志。</p><a-table :data="sessions" :pagination="false" :bordered="false"><template #columns><a-table-column title="成员" data-index="memberName"/><a-table-column title="会话 ID" data-index="sessionId" ellipsis/><a-table-column title="创建时间"><template #cell="{record}">{{new Date(record.createdAt).toLocaleString()}}</template></a-table-column><a-table-column title="操作"><template #cell="{record}"><a-button type="text" @click="viewSession(record)">查看正文</a-button></template></a-table-column></template></a-table><a-space><a-button :disabled="sessionOffset===0" @click="sessionOffset-=50;loadSessions()">上一页</a-button><a-button :disabled="sessions.length&lt;50" @click="sessionOffset+=50;loadSessions()">下一页</a-button></a-space></section>
+<section v-else-if="page==='audit'" class="content-panel"><h2>组织操作记录</h2><p class="muted">记录组织管理与协作操作，不展示成员私有会话正文。最近 100 条。</p><a-table :data="audits" row-key="id" :bordered="false"><template #columns><a-table-column title="操作时间" :width="170"><template #cell="{record}">{{new Date(record.occurredAt).toLocaleString()}}</template></a-table-column><a-table-column title="操作人" :width="130"><template #cell="{record}">{{members.find(m=>m.id===record.actorId)?.displayName||'已移除成员'}}</template></a-table-column><a-table-column title="操作"><template #cell="{record}">{{auditLabel(record.action)}}</template></a-table-column><a-table-column title="对象 ID" data-index="targetId" ellipsis/></template></a-table></section>
+<section v-else class="content-panel"><h2>企业信息</h2><a-descriptions :column="1" bordered><a-descriptions-item label="企业名称">{{organization.name}}</a-descriptions-item><a-descriptions-item label="当前账号">{{me.email}}</a-descriptions-item><a-descriptions-item label="组织角色">{{roleLabel(me.role)}}</a-descriptions-item><a-descriptions-item label="登录方式">邮箱 / 管理员设置的登录用户名</a-descriptions-item><a-descriptions-item label="运行端">通过外置企业身份与协作插件接入 DSH</a-descriptions-item></a-descriptions></section>
+</main></div>
+<a-drawer :visible="!!sessionDetail" title="会话正文" :width="720" :footer="false" @cancel="sessionDetail=null;sessionMessages=[]"><p class="muted">{{sessionDetail?.memberName}} · 只读查看</p><a-empty v-if="!sessionMessages.length" description="当前记录没有聊天正文"/><article v-for="message in sessionMessages" :key="message.seq" style="margin-bottom:24px"><strong>{{message.role==='user'?'用户':'助手'}}</strong><small class="muted"> · {{new Date(message.time).toLocaleString()}}</small><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">{{messageText(message.content)||'[非文本内容]'}}</pre></article><a-button v-if="sessionMore" @click="viewSession(sessionDetail,true)">加载更多</a-button></a-drawer>
+<a-drawer v-model:visible="drawer" :title="editing?'编辑成员':'添加成员'" :width="520" :footer="true" :unmount-on-close="true"><div class="drawer-section-title">基本信息</div><a-form :model="form" layout="vertical"><a-form-item label="姓名" required><a-input v-model="form.displayName" :max-length="64" placeholder="输入成员姓名"/></a-form-item><a-form-item label="主部门"><a-select v-model="form.departmentId" :options="deptOptions" allow-clear placeholder="选择主部门"/></a-form-item><a-form-item label="邮箱" required><a-input v-model="form.email" :disabled="!!editing" placeholder="name@company.com"/></a-form-item><a-form-item label="登录用户名" help="由管理员设置，2–64 位字母、数字、点、下划线或短横线"><a-input v-model="form.username" placeholder="例如 zhangsan"/></a-form-item><div class="drawer-section-title">组织与岗位</div><a-form-item label="组织角色"><a-select v-model="form.role" :disabled="!owner"><a-option value="MEMBER">成员</a-option><a-option value="ADMIN">管理员</a-option></a-select></a-form-item><a-form-item label="工号"><a-input v-model="form.employeeNumber" :max-length="64"/></a-form-item><a-form-item label="职位"><a-input v-model="form.jobTitle" :max-length="64"/></a-form-item></a-form><a-alert v-if="!editing">直接添加后生成一次性临时密码，成员首次登录须修改。当前不发送邀请邮件。</a-alert><template #footer><a-space><a-button @click="drawer=false">取消</a-button><a-button type="primary" :loading="saving" @click="saveMember">保存</a-button></a-space></template></a-drawer>
+<a-modal v-model:visible="deptModal" :title="deptEditing?'编辑部门':'添加部门'" @before-ok="async()=>{await saveDepartment();return !deptModal}"><a-form :model="deptForm" layout="vertical"><a-form-item label="部门名称" required><a-input v-model="deptForm.name" :max-length="64"/></a-form-item><a-form-item label="上级部门"><a-select v-model="deptForm.parentId" :options="deptOptions.filter(d=>d.value!==deptEditing?.id)" allow-clear placeholder="不选则为一级部门"/></a-form-item></a-form></a-modal>
+<a-modal v-model:visible="moveModal" title="批量调整部门" @before-ok="async()=>{await moveMembers();return !moveModal}"><p>调整所选 {{selected.length}} 位成员的主部门。</p><a-select v-model="moveDepartment" :options="deptOptions" allow-clear placeholder="选择部门（清空为未分配）"/></a-modal>
+<a-modal :visible="!!secret" title="成员临时密码" :footer="false" @cancel="secret=''"><p>请通过安全渠道交给成员。关闭后不会再次显示。</p><code class="credential">{{secret}}</code><a-button type="primary" @click="secret=''">我已记录</a-button></a-modal>
 </template>

@@ -4,4 +4,12 @@ server/data/*
 web/node_modules/
 web/dist/
 .env
+.env.*
+!.env.example
 .DS_Store
+
+# Local acceptance state, credentials, generated packages and captures
+.test-runtime/
+.artifacts/
+**/__pycache__/
+*.py[cod]
