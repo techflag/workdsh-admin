@@ -38,6 +38,10 @@ npm run dev
 
 后台通过 Spring AI 传输 OpenAI 请求与 Anthropic 非流式请求；Anthropic SSE 保留原生事件透明转发。内部 Key 当前为组织共享调用凭据，不是逐成员计费凭据。模型目录手工维护，没有上游自动发现。模型参数扩展、上游错误与取消仍需官方 DSH 完整对话兼容验收。
 
+## 企业 Desktop 正文同步
+
+显式安装企业身份外置插件的 Desktop 可通过新的成员 Bearer API 同步用户/助手可见正文，使用独立 `desktop-body:` 命名空间、稳定请求回执、不可变追加与删除墓碑。Desktop Main 代理固定接口，Host 不持后台凭据。现有管理员按组织授权只读查看并留审计；这些成员设备提交的正文不是可信终端完整审计。API 字段、限额、重试和删除语义见 [Desktop 正文接口](docs/DESKTOP-VISIBLE-SESSIONS-API.md)。后台接口测试不代替 Desktop 安装与实际同步验收。
+
 ## 构建与候选交付
 
 ```sh

@@ -16,6 +16,7 @@ FIXED = {
     'deploy/sqlite/schema.sql': 'server/src/main/resources/schema-sqlite.sql',
     'deploy/postgres/README.md': 'deploy/postgres/README.md',
     'docs/ENTERPRISE-DATABASES.md': 'docs/ENTERPRISE-DATABASES.md',
+    'docs/DESKTOP-VISIBLE-SESSIONS-API.md': 'docs/DESKTOP-VISIBLE-SESSIONS-API.md',
     'README.md': 'deploy/ADMIN-SERVER-CANDIDATE.md',
 }
 

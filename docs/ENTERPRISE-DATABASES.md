@@ -4,11 +4,13 @@
 
 SQLite：`SPRING_PROFILES_ACTIVE=enterprise-sqlite`，默认 `jdbc:sqlite:./data/workdsh-enterprise.sqlite`。新开发验收库使用当前schema-sqlite.sql（后台包deploy/sqlite/schema.sql），foreign_keys开启、单JDBC连接。MySQL：`enterprise-mysql`，显式提供JDBC_URL/JDBC_USER/JDBC_PASSWORD；维护账号初始化当前schema-mysql.sql（后台包deploy/mysql/schema.sql），应用禁止自动DDL。PostgreSQL：`enterprise-postgres`，由维护账号执行deploy/postgres/migrations，再授予独立运行角色权限；应用禁止自动DDL，见deploy/postgres/README.md。
 
-当前开发态只初始化新验收库，不兼容迁移旧测试账号、旧单模型数据、Runtime专属授权或订单。旧库不被自动重置或搬迁；不能把新schema脚本直接用于现有数据库。V006补齐当前多模型配置、内部Key与官方transport签名存储。
+当前开发态只初始化新验收库，不兼容迁移旧测试账号、旧单模型数据、Runtime专属授权或订单。旧库不被自动重置或搬迁；不能把新schema脚本直接用于现有数据库。V006补齐当前多模型配置、内部Key与官方transport签名存储；V007增加独立Desktop可见正文/回执/墓碑表。
 
 member_secrets与member_secret_records按组织/成员/引用或record key隔离；使用AES-256-GCM并绑定归属作为AAD，32字节随机密钥Base64通过WORKDSH_SECRETS_ENCRYPTION_KEY提供。服务间接口还要求WORKDSH_SECRETS_SERVICE_KEY与有效成员Bearer，不接受目标成员ID；key不下发浏览器。记录更新采用CAS，删除保留修订墓碑。
 
 member_storage_units按组织/成员/单元复合键持久化。member_sessions保存原生日志header与event_count，member_session_events按序追加；单写者租约绑定登录auth_sessions，logout释放租约。当前按账号官方DSH进程通过固定成员会话桥接读写，所有请求重新验证/auth/me和固定成员/组织。
+
+member_desktop_body_sessions/records/receipts保存成员Bearer正文接收的归属、追加正文与幂等回执。它们与正式Web原生日志表分离；删除正文保留revision/摘要墓碑。详见[接口契约](DESKTOP-VISIBLE-SESSIONS-API.md)。
 
 多模型配置保存在organization_model_providers，供应商Key仅服务器解密使用；organization_model_gateway保存内部Key摘要，另有加密副本供管理员主动查看并审计。协议归各接口，不保留单模型配置表或读回退。server_transport_records保存加密签名状态，不以组织模型Key作为成员身份。
 
