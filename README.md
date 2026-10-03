@@ -4,11 +4,9 @@
 
 ## 运行与交付边界
 
-企业部署采用单 ECS、一个成员服务器容器，按已认证账号启动一份官方 DSH 原生进程。相同账号的连接复用该进程，各成员有固定身份、Linux UID 和独立文件空间。后台 Java 服务独立运行。主仓库 `workdsh/deploy/member-process` 是启动器、成员网关、数据库会话桥接与 Docker 配方的唯一源码，本仓库只提供后台和登录页/浏览器账户存储隔离资产。
+企业 Agent、工具和工作区只在员工桌面客户端运行。服务器提供管理后台，负责账号、组织、权限、协作数据、桌面可见正文审计与 Spring AI 模型转发，不部署 ECS 成员 DSH 进程、成员网关或服务器会话存储。
 
-产品官方核心和版本族以 WorkDSH 兼容验证目标为准，当前目标为 `0.2.0-rc.2`；不能把后台重建当成个人、企业与 Desktop 全部升级。使用同一锁定官方完整 Web 与共同功能包，企业身份、存储、授权为显式组合差异，不复制官方 Host、Client 或设置页面，不修改官方源码。企业身份与协作等外置插件独立交付，不默认捆绑到个人或 Desktop。
-
-只保留当前按账号进程路线。订单、审核和旧单模型 API 已删除；旧 Runtime 专属凭据、启动票据网关与共享 Host 发布路线已退役。业务 API 统一验证现有成员登录 Cookie/Bearer，并检查成员状态、组织归属与首次改密；普通成员不能访问管理 API。管理员按授权只读查看本组织会话正文并记录审计。服务器插件页只读展示收到的实际运行观察；当前成员配方尚未接通上报，未取得清单时显示不可用。安装与更新由服务器运维通过官方 CLI 执行。
+Desktop 使用同一个基础安装包，企业账号和协作插件由用户显式安装。安装插件不赋予企业权限；后台验证成员身份、状态和组织归属。普通成员不能访问管理 API，管理员读取正文按组织授权并记录审计。
 
 ## 本地开发
 
@@ -40,7 +38,7 @@ npm run dev
 
 ## 企业 Desktop 正文同步
 
-显式安装企业身份外置插件的 Desktop 可通过新的成员 Bearer API 同步用户/助手可见正文，使用独立 `desktop-body:` 命名空间、稳定请求回执、不可变追加与删除墓碑。Desktop Main 代理固定接口，Host 不持后台凭据。现有管理员按组织授权只读查看并留审计；这些成员设备提交的正文不是可信终端完整审计。API 字段、限额、重试和删除语义见 [Desktop 正文接口](docs/DESKTOP-VISIBLE-SESSIONS-API.md)。后台接口测试不代替 Desktop 安装与实际同步验收。
+企业模式启用已安装账号插件的 Desktop 可通过新的成员 Bearer API 同步用户/助手可见正文，使用独立 `desktop-body:` 命名空间、稳定请求回执、不可变追加与删除墓碑。Desktop Main 代理固定接口，Host 不持后台凭据。现有管理员按组织授权只读查看并留审计；这些成员设备提交的正文不是可信终端完整审计。API 字段、限额、重试和删除语义见 [Desktop 正文接口](docs/DESKTOP-VISIBLE-SESSIONS-API.md)。后台接口测试不代替 Desktop 安装与实际同步验收。
 
 ## 构建与候选交付
 
@@ -49,16 +47,18 @@ mvn -f server/pom.xml clean test package
 npm --prefix web run build
 python3 scripts/test-admin-release.py
 python3 scripts/test-admin-packaged.py --java /absolute/path/to/java
-node --test scripts/test-account-storage-fence.mjs scripts/test-admin-loopback-front.mjs
+node --test scripts/test-admin-loopback-front.mjs
 python3 scripts/pack-admin-release.py --output /private/tmp/workdsh-admin-candidate.zip
 ```
 
-封闭包只收录后台 JAR、管理前端、已审查 Docker 配方、数据库维护文件和被成员服务器复用的登录/账户隔离资产。包不含成员运行实例、数据库、账号、密钥、证书或个人 Home。安装器 `scripts/install-admin-release.py` 校验清单与 SHA256，拒绝覆盖或不安全路径；详细步骤见 [后台交付](deploy/ADMIN-SERVER-CANDIDATE.md)。
+封闭包只收录后台 JAR、管理前端、已审查 Docker 配方、数据库维护文件。包不含成员运行实例、数据库、账号、密钥、证书或个人 Home。安装器 `scripts/install-admin-release.py` 校验清单与 SHA256，拒绝覆盖或不安全路径；详细步骤见 [后台交付](deploy/ADMIN-SERVER-CANDIDATE.md)。
 
-成员服务器另从主仓库维护源码构建：
+## 企业 Desktop 接入
 
-```sh
-node "$WORKDSH_SOURCE/deploy/member-process/prepare-context.mjs" /private/tmp/workdsh-member-build "$PWD"
-```
+用户进入个人空间安装企业账号与协作插件，从工作区菜单连接企业后台并登录。后台地址可由管理员通过 `WORKDSH_DEPLOYMENT_CONFIG` 预置；配置不含账号、密码或模型密钥。个人与企业空间分别保存本机数据和凭据。
 
-具体参数和固定依赖要求以主仓库 `deploy/member-process/README.md` 为准。不得从当前容器、临时 Home 或镜像手工导出启动源码。后台先就绪，再启动成员服务器；公网 TLS、反向代理、数据库备份与恢复、生产开机恢复及完整 Linux 隔离需要目标环境验收。当前源码和单元测试通过不等于 ECS 交付完成。
+成员在官方“设置 → 模型 → 自定义模型 API”中填写公司内部地址、访问 Key、协议和模型 ID。供应商 Key 保存在后台；Agent 和工具在本机执行。
+
+## 管理后台截图
+
+![WorkDSH 企业控制台组织概览](assets/screenshots/admin-overview.jpg)

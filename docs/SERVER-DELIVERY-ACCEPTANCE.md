@@ -1,9 +1,7 @@
-# 当前服务器交付验收
+# 企业 Desktop 与后台验收
 
-交付包含两部分：本仓库后台候选和主仓库唯一 `deploy/member-process` 成员服务器配方。构建、封闭 ZIP、严格安装与 Docker 参数见 [后台交付](../deploy/ADMIN-SERVER-CANDIDATE.md) 和主仓库 member-process README。
+企业 Agent、工具和文件操作只在 Desktop 本机执行。后台负责账号、组织、权限、协作数据、桌面正文审计与模型转发。
 
-当前后台通过 Java 测试、Node22 Web 构建、账户存储/HTTPS 转接、封闭打包/安装，以及 Java17 制品 smoke。PostgreSQL 新库 SQL 交付一致性在 H2 模式验证，不能代替实际引擎。
+验收检查：成员登录/退出和停用、跨组织权限拒绝、协作发送接收与附件归属、桌面正文审计、内部模型 API、管理前端构建、封闭安装包校验。Desktop 的插件安装与真实登录需要候选安装包验收。公网 TLS、生产数据库与备份恢复须在目标部署环境验证。
 
-目标 Linux/ECS 仍需检查固定官方版本、完整 Web/共同插件、不同 UID 文件与端口访问、退出与撤权、上传/含消息会话恢复、数据库 TLS/角色/备份与冷启动。真实模型对话和正式浏览器 CA 也须独立实测。旧双 Host/共享 Host 归档与镜像不再是现行交付来源，源码不得从临时容器导出。
-
-详见 [当前状态](STATUS.md) 与 [浏览器验收清单](BROWSER-ACCEPTANCE-CHECKLIST.md)。未提交/发布。
+构建与交付命令见 [README](../README.md) 和 [后台交付](../deploy/ADMIN-SERVER-CANDIDATE.md)。

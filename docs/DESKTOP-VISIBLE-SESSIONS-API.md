@@ -2,7 +2,7 @@
 
 这份接口用于接收显式安装企业身份插件的 Desktop 所同步的用户/助手可见正文记录。组织和成员由有效成员 Bearer 推导；客户端不能指定组织、成员、管理员角色、原生会话 header 或正式 Web 会话目标。Desktop Host 不应持有后台 Bearer 或服务器 service key，由 Desktop Main 在验证当前账号与固定设备后代理白名单请求。传输须使用部署受信任的 HTTPS，Bearer 放 Authorization，不能放 URL。
 
-本接口与 `/api/internal/member-sessions` 的服务器 service-key 原生日志存储契约独立，不能覆盖该契约的 `member_sessions` / `member_session_events`。正文是由成员设备主动提交的可见记录日志，不是可信终端全量审计；后台无法证明设备没有漏报或伪造正文。
+正文由成员设备主动提交，不是可信终端全量审计；后台无法证明设备没有漏报或伪造正文。
 
 ## 鉴权与数据归属
 

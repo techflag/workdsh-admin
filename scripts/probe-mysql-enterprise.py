@@ -22,7 +22,7 @@ try:
  print('Current MySQL new schema initialized',flush=True)
  port=run(['docker','port',name,'3306/tcp']).stdout.decode().strip().split(':')[-1]
  env=dict(os.environ,WORKDSH_TEST_MYSQL_URL='jdbc:mysql://127.0.0.1:'+port+'/workdsh_test?allowPublicKeyRetrieval=true&useSSL=false',WORKDSH_TEST_MYSQL_PASSWORD=password)
- result=subprocess.run(['mvn','-q','-Dtest=MysqlEnterpriseTest,MemberStorageMysqlTest','test'],cwd=root/'server',env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+ result=subprocess.run(['mvn','-q','-Dtest=MysqlEnterpriseTest','test'],cwd=root/'server',env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
  if result.returncode:raise RuntimeError(result.stdout.decode().replace(password,'[redacted]')[-6500:])
  print('MySQL integration test passed',flush=True)
 finally:

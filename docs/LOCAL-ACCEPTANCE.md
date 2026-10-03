@@ -1,14 +1,7 @@
-# 本地验收
+# 企业 Desktop 与后台验收
 
-当前后台开发入口与构建步骤见 [README](../README.md)。默认管理前端为 `http://127.0.0.1:18891/`、Java 为 `127.0.0.1:18890`，实际后台账号通过包外 bootstrap 配置初始化。
+企业 Agent、工具和文件操作只在 Desktop 本机执行。后台负责账号、组织、权限、协作数据、桌面正文审计与模型转发。
 
-```sh
-mvn -f server/pom.xml clean test package
-npm --prefix web run build
-python3 scripts/test-admin-packaged.py --java /absolute/path/to/java
-node --test scripts/test-account-storage-fence.mjs scripts/test-admin-loopback-front.mjs
-```
+验收检查：成员登录/退出和停用、跨组织权限拒绝、协作发送接收与附件归属、桌面正文审计、内部模型 API、管理前端构建、封闭安装包校验。Desktop 的插件安装与真实登录需要候选安装包验收。公网 TLS、生产数据库与备份恢复须在目标部署环境验证。
 
-packaged smoke 自动创建临时 H2、虚构账号与随机回环端口，结束关闭服务，不访问供应商。管理 API、账户隔离和转接测试不能代替成员服务器实际 Web/上传/会话/UID 验收。
-
-成员服务器从主仓库 `deploy/member-process/prepare-context.mjs` 构建。生产地址、私钥、数据库和成员存储在包外管理，旧双容器恢复命令已删除。完整检查范围见 [浏览器验收清单](BROWSER-ACCEPTANCE-CHECKLIST.md) 与 [当前状态](STATUS.md)。
+构建与交付命令见 [README](../README.md) 和 [后台交付](../deploy/ADMIN-SERVER-CANDIDATE.md)。
