@@ -8,7 +8,7 @@ SQLite：`SPRING_PROFILES_ACTIVE=enterprise-sqlite`，默认 `jdbc:sqlite:./data
 
 member_secrets与member_secret_records按组织/成员/引用或record key隔离；使用AES-256-GCM并绑定归属作为AAD，32字节随机密钥Base64通过WORKDSH_SECRETS_ENCRYPTION_KEY提供。服务间接口还要求WORKDSH_SECRETS_SERVICE_KEY与有效成员Bearer，不接受目标成员ID；key不下发浏览器。记录更新采用CAS，删除保留修订墓碑。
 
-member_storage_units按组织/成员/单元复合键持久化。member_sessions保存原生日志header与event_count，member_session_events按序追加；单写者租约绑定登录auth_sessions，logout释放租约。当前按账号官方DSH进程通过固定成员会话桥接读写，所有请求重新验证/auth/me和固定成员/组织。
+桌面原生会话与工作区保存在员工设备。后台只存储账号授权、协作数据、模型配置及已授权同步的可见正文，不承担 Agent 运行存储。
 
 member_desktop_body_sessions/records/receipts保存成员Bearer正文接收的归属、追加正文与幂等回执。它们与正式Web原生日志表分离；删除正文保留revision/摘要墓碑。详见[接口契约](DESKTOP-VISIBLE-SESSIONS-API.md)。
 

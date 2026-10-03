@@ -1,4 +1,4 @@
-"""Closed-list admin delivery; native DSH processes belong to workdsh/workdsh-web/deploy/member-process."""
+"""Closed-list admin delivery; Agent execution belongs to Desktop, not this server."""
 import argparse, hashlib, json, pathlib, zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 KIND = 'workdsh-admin-server-candidate'
@@ -7,9 +7,6 @@ FIXED = {
     'deploy/docker/Admin.Dockerfile': 'deploy/docker/Admin.Dockerfile',
     'deploy/docker/AdminFront.Dockerfile': 'deploy/docker/AdminFront.Dockerfile',
     'deploy/docker/admin-loopback-front.mjs': 'deploy/docker/admin-loopback-front.mjs',
-    'deploy/docker/user-entry.html': 'deploy/docker/user-entry.html',
-    'deploy/docker/shared-entry-client.js': 'deploy/docker/shared-entry-client.js',
-    'deploy/docker/account-storage-fence.mjs': 'deploy/docker/account-storage-fence.mjs',
     'scripts/migrate-postgres.py': 'scripts/migrate-postgres.py',
     'deploy/postgres/runtime-grants.sql': 'deploy/postgres/runtime-grants.sql',
     'deploy/mysql/schema.sql': 'server/src/main/resources/schema-mysql.sql',
@@ -39,7 +36,6 @@ def build_archive(output, root=ROOT):
     if 'web/dist/index.html' not in files: raise ValueError('Build admin Web before packaging')
     blobs = {name: path.read_bytes() for name, path in files.items()}
     manifest = {'kind': KIND, 'personalDefaultChanged': False, 'memberRuntimeIncluded': False,
-        'nativeProcessSource': 'workdsh/workdsh-web/deploy/member-process',
         'requires': {'java': 17, 'node': '22.19+ or 24+', 'database': 'explicit deployment configuration'},
         'files': {name: {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)} for name, data in sorted(blobs.items())}}
     blobs['manifest.json'] = json.dumps(manifest, ensure_ascii=False, indent=2).encode()

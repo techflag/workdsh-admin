@@ -14,6 +14,6 @@ class DesktopVisibleSqliteTest {
   String bearer="Bearer "+auth.login("desktop-sqlite@example.test","DesktopSqliteFixture123!").token();
   var input=json.valueToTree(Map.of("version",1,"deviceId","sqlite-device","sessionId","sqlite-session","revision",1,"requestId","sqlite-request","entries",List.of(Map.of("seq",0,"recordId","sqlite-record","role","user","text","SQLite visible body"))));
   var receipt=sessions.ingest(bearer,input);assertEquals(receipt,sessions.ingest(bearer,input));assertEquals(1,admin.list(bearer,0,50).size());assertEquals(1,admin.detail(bearer,auth.actor(bearer).id(),receipt.sessionId(),0).messages().size());
-  assertEquals(0,db.queryForObject("select count(*) from member_sessions",Integer.class));assertTrue(sessions.delete(bearer,"sqlite-device","sqlite-session").deleted());assertTrue(admin.list(bearer,0,50).isEmpty());
+  assertTrue(sessions.delete(bearer,"sqlite-device","sqlite-session").deleted());assertTrue(admin.list(bearer,0,50).isEmpty());
  }
 }
