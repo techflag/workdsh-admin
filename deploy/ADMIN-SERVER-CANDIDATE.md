@@ -1,6 +1,6 @@
 # WorkDSH 管理后台候选交付
 
-这是后台 JAR、管理 Web、数据库维护脚本和登录/账户存储隔离资产的封闭候选，不包含成员 DSH 进程、官方 runtime、企业插件安装、账号、密钥、证书或业务数据。
+这是后台 JAR、管理 Web、数据库维护脚本的封闭候选，不包含成员 DSH 进程、官方 runtime、企业插件安装、账号、密钥、证书或业务数据。
 
 构建 `mvn -f server/pom.xml clean test package` 与 `npm --prefix web run build` 后，使用 `python3 scripts/pack-admin-release.py --output /absolute/new/admin.zip`。安装使用 `python3 scripts/install-admin-release.py ARCHIVE NEW_VERSION_DIRECTORY`；已有目录不会被覆盖，文件数/类型/字节数/SHA256必须与清单一致，不自动启动服务。
 
@@ -10,7 +10,7 @@
 
 可选 `AdminFront.Dockerfile` 只用于本机loopback验收：固定 `WORKDSH_ADMIN_FRONT_ORIGIN=http://127.0.0.1:<port>`、HTTPS `WORKDSH_ADMIN_BACKEND` 和后台配置的 `WORKDSH_ADMIN_BACKEND_ORIGIN`，配置信任CA，不关闭TLS验证。管理请求只采用管理员Cookie并重写可信Origin；内部模型API单独保留Bearer/x-api-key且去掉浏览器Cookie。公网入口需另行配置真实TLS与反向代理，这个HTTP前门不能作为ECS公网模板，也不能作为 Desktop 成员 Bearer API 入口；它只保留管理 Cookie 的策略不在本轮改变。
 
-成员进程交付只有 WorkDSH 主仓库的 `deploy/member-process/prepare-context.mjs` / Dockerfile。本仓库的 `deploy/docker/user-entry.html`、`shared-entry-client.js` 和 `account-storage-fence.mjs` 由该入口组装；不存在第二份启动器或成员网关。单ECS按账号固定官方DSH进程，Java后台独立；个人/企业共同功能包和官方Web来源保持一致。
+企业运行只在 Desktop 本机，后台不交付成员 DSH 进程、网关和成员浏览器入口。
 
 供应商凭据在管理员页面配置，成员在官方自定义模型API中手动填内部URL/Key/协议/模型ID。镜像构建和ZIP只证明源码可收录，不代替实际Linux构建、启动、撤权、文件/执行隔离、模型流式对话、恢复与ECS部署验收。
 

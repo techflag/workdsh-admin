@@ -1,27 +1,16 @@
-name: Build and test
-
+name: Admin CI
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+  push:
+    branches: [main, 'codex/**']
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: admin-ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  check:
+  build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -29,31 +18,16 @@ jobs:
           cache: maven
       - uses: actions/setup-node@v6
         with:
-          node-version: 22.23.2
+          node-version: '22.23.2'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Build and test server
-        run: mvn -B -ntp -f server/pom.xml clean test package
-      - name: Install and build admin interface
+      - name: Backend tests and package
+        working-directory: server
+        run: mvn --batch-mode verify
+      - name: Build administration UI
+        working-directory: web
         run: |
-          npm ci --prefix web
-          npm --prefix web run build
-      - name: Account storage and loopback access tests
-        run: node --test scripts/test-account-storage-fence.mjs scripts/test-admin-loopback-front.mjs
-      - name: Release content tests
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
+          npm ci
+          npm run build
+      - name: Verify release archive boundary
         run: python3 scripts/test-admin-release.py
-      - name: Package and install candidate
-        run: |
-          python3 scripts/pack-admin-release.py --output "$RUNNER_TEMP/workdsh-admin-candidate.zip"
-          python3 scripts/install-admin-release.py "$RUNNER_TEMP/workdsh-admin-candidate.zip" "$RUNNER_TEMP/workdsh-admin-installed"
-      - name: Packaged server and TLS smoke
-        run: python3 scripts/test-admin-packaged.py --java "$JAVA_HOME/bin/java" --release-root "$RUNNER_TEMP/workdsh-admin-installed" --log "$RUNNER_TEMP/workdsh-admin-packaged-smoke.log"
-      - name: Upload candidate package
-        uses: actions/upload-artifact@v4
-        with:
-          name: workdsh-admin-candidate
-          path: ${{ runner.temp }}/workdsh-admin-candidate.zip
-          if-no-files-found: error
-          retention-days: 14

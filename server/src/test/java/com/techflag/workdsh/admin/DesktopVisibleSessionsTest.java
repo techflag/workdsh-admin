@@ -53,11 +53,10 @@ class DesktopVisibleSessionsTest {
   assertEquals(2,db.queryForObject("select count(*) from member_desktop_body_records where member_id=? and client_session_id=?",Integer.class,a.id(),id));
   var response=mvc.perform(status(a,id,"device-A")).andReturn().getResponse();assertEquals("no-store",response.getHeader("Cache-Control"));
  }
- @Test void adminBodyReadIsOrganizationScopedAuditedAndDeletionCannotTouchWebStorage()throws Exception{
+ @Test void adminBodyReadIsOrganizationScopedAuditedAndDeletionIsMemberScoped()throws Exception{
   var o=owner();var a=member(o.org(),true);String id=session();
-  db.update("insert into member_sessions(organization_id,member_id,session_id,header_json,inherited_count,event_count,writer_expires) values(?,?,?,?,0,0,0)",o.org(),a.id(),id,json.writeValueAsString(Map.of("id",id,"createdAt",123)));
   var receipt=ingest(a,snapshot(id,"device-A",1,2),200);String server=receipt.path("sessionId").asText();
-  var listed=call(get("/api/admin/sessions").header("Authorization",o.bearer()),200);assertTrue(listed.toString().contains(server));assertTrue(listed.toString().contains(id));
+  var listed=call(get("/api/admin/sessions").header("Authorization",o.bearer()),200);assertTrue(listed.toString().contains(server));
   var detail=call(get("/api/admin/sessions/"+a.id()+"/"+server).header("Authorization",o.bearer()),200);assertEquals(2,detail.path("messages").size());assertEquals("assistant",detail.path("messages").get(1).path("role").asText());assertEquals("text",detail.path("messages").get(1).path("content").get(0).path("type").asText());
   assertTrue(db.queryForObject("select count(*) from audit_events where organization_id=? and action='session.content.viewed'",Integer.class,o.org())>0);
   call(get("/api/admin/sessions/"+a.id()+"/"+server).header("Authorization",a.bearer()),403);
@@ -68,7 +67,6 @@ class DesktopVisibleSessionsTest {
   assertTrue(call(status(a,id,"device-A"),200).path("deleted").asBoolean());ingest(a,snapshot(id,"device-A",1,2),410);
   call(get("/api/admin/sessions/"+a.id()+"/"+server).header("Authorization",o.bearer()),404);
   assertEquals(0,db.queryForObject("select count(*) from member_desktop_body_records where member_id=?",Integer.class,a.id()));assertEquals(1,db.queryForObject("select count(*) from member_desktop_body_receipts where member_id=?",Integer.class,a.id()));
-  assertEquals(1,db.queryForObject("select count(*) from member_sessions where member_id=? and session_id=?",Integer.class,a.id(),id));
   // The same local identifier belongs independently to another authenticated member.
   assertNotEquals(server,ingest(other,snapshot(id,"device-A",1,1),200).path("sessionId").asText());
  }
