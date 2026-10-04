@@ -1,6 +1,23 @@
 # WorkDSH Admin
 
+**[WorkDSH](https://github.com/techflag/workdsh) 的企业管理后台。** WorkDSH 提供个人工作台与可安装的企业连接插件，本仓库为企业连接提供账号、组织权限、协作数据和公司模型 API。客户端与管理后台分别开发、部署，配合使用。
+
+[WorkDSH 客户端与功能介绍](https://github.com/techflag/workdsh#readme) · [桌面安装包与企业插件下载](https://github.com/techflag/workdsh/releases) · [企业插件安装与登录](https://github.com/techflag/workdsh/blob/main/README.zh-CN.md#企业连接插件下载安装与登录)
+
 企业管理后台与内部模型 API，使用 Spring Boot / Spring AI、Vue 3 / Arco。当前处于开发验收阶段。管理后台拥有组织、成员、部门、角色权限、协作记录、成员数据库存储、成员会话只读审计和公司模型接口；官方 DSH 负责模型选择、会话和 Agent 执行。
+
+## 与 WorkDSH 配合使用
+
+| 组件 | 所在仓库 | 负责什么 |
+| --- | --- | --- |
+| WorkDSH 客户端与插件 | [techflag/workdsh](https://github.com/techflag/workdsh) | 个人工作台、员工本机 Agent 与工具、公司模型选择、@同事分享及协作页面。 |
+| WorkDSH Admin | 本仓库 | 成员账号、组织与权限、协作数据、正文只读审计和内部模型转发。 |
+
+管理员部署本后台，创建成员账号并提供公司后台地址；配置公司模型后，再提供内部模型 API 地址与访问 Key。员工下载 WorkDSH 桌面端，在个人空间安装并启用企业连接插件，然后登录公司账号。模型需在客户端的“自定义模型 API”中单独配置，登录不会自动添加公司模型。
+
+企业连接插件目前未上架第三方插件市场。从 [WorkDSH Releases](https://github.com/techflag/workdsh/releases) 下载 `.tgz` 包，在“插件 → 添加插件”填写文件完整路径，安装后点击“立即启用”，再到“设置 → 企业账号 → 连接企业”登录。安装插件不等于获得企业成员权限。
+
+独立业务插件可复用企业身份插件提供的 `workdshEnterprise` 服务请求公司后台，无需读取成员 Token；业务接口仍需在后台检查成员与业务权限。调用方式和支持版本见客户端仓库的[企业业务插件认证接入](https://github.com/techflag/workdsh/blob/main/docs/ENTERPRISE-PLUGIN-AUTH.md)。本后台不自动提供报表等自定义业务接口。
 
 ## 运行与交付边界
 
@@ -55,7 +72,7 @@ python3 scripts/pack-admin-release.py --output /private/tmp/workdsh-admin-candid
 
 ## 企业 Desktop 接入
 
-用户进入个人空间安装企业账号与协作插件，从工作区菜单连接企业后台并登录。后台地址可由管理员通过 `WORKDSH_DEPLOYMENT_CONFIG` 预置；配置不含账号、密码或模型密钥。个人与企业空间分别保存本机数据和凭据。
+用户进入个人空间安装并启用企业连接插件包（包含账号与协作功能），通过“设置 → 企业账号 → 连接企业”连接后台并登录。后台地址可由管理员通过 `WORKDSH_DEPLOYMENT_CONFIG` 预置；配置不含账号、密码或模型密钥。个人与企业空间分别保存本机数据和凭据。
 
 成员在官方“设置 → 模型 → 自定义模型 API”中填写公司内部地址、访问 Key、协议和模型 ID。供应商 Key 保存在后台；Agent 和工具在本机执行。
 
