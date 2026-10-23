@@ -1,0 +1,40 @@
+# PostgreSQL 验收栈（叠加在 docker-compose.yml 之上）：
+# docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+#
+# 首次初始化由 deploy/postgres/docker/init-schema.sh 完成：创建 workdsh_app 运行角色、
+# 按 V001-V007 应用迁移、记录 schema history、执行 runtime-grants.sql。
+# 应用连接使用最小权限角色，不使用维护账号；应用本身禁止自动 DDL。
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_DB: ${WORKDSH_DB_NAME:-workdsh}
+      POSTGRES_USER: ${WORKDSH_DB_MAINT_USER:-workdsh_owner}
+      POSTGRES_PASSWORD: ${WORKDSH_DB_MAINT_PASSWORD:?请先在 .env 中设置 WORKDSH_DB_MAINT_PASSWORD}
+      WORKDSH_DB_APP_PASSWORD: ${WORKDSH_DB_APP_PASSWORD:?请先在 .env 中设置 WORKDSH_DB_APP_PASSWORD}
+    volumes:
+      - workdsh-pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/migrations:/migrations:ro
+      - ./deploy/postgres/runtime-grants.sql:/runtime-grants.sql:ro
+      - ./deploy/postgres/docker/init-schema.sh:/docker-entrypoint-initdb.d/10-init-schema.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  admin:
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: enterprise-postgres
+      JDBC_URL: jdbc:postgresql://db:5432/${WORKDSH_DB_NAME:-workdsh}
+      JDBC_USER: workdsh_app
+      JDBC_PASSWORD: ${WORKDSH_DB_APP_PASSWORD:?请先在 .env 中设置 WORKDSH_DB_APP_PASSWORD}
+    # 切到 PostgreSQL 后 H2 数据卷仍挂载在 /state/data，但不被使用；保留以便随时退回默认栈。
+
+volumes:
+  workdsh-pgdata:

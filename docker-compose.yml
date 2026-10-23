@@ -1,0 +1,37 @@
+# WorkDSH 管理后台默认栈：H2 文件库 + 内置管理前端，单容器。
+# 企业式 PostgreSQL 验收请叠加：docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build
+#
+# 启动前：cp .env.example .env 并填写必填项。.env 已在 .gitignore 中。
+name: workdsh-admin
+
+x-admin-environment: &admin-environment
+  BIND_ADDRESS: "0.0.0.0"
+  PORT: "18890"
+  # 必须等于浏览器实际访问的地址（含端口），否则登录等写请求会被 Origin 校验拒绝。
+  WORKDSH_ADMIN_WEB_ORIGIN: ${WORKDSH_ADMIN_WEB_ORIGIN:-http://127.0.0.1:18890}
+  WORKDSH_BOOTSTRAP_ADMIN_EMAIL: ${WORKDSH_BOOTSTRAP_ADMIN_EMAIL:?请先在 .env 中设置 WORKDSH_BOOTSTRAP_ADMIN_EMAIL}
+  WORKDSH_BOOTSTRAP_ADMIN_PASSWORD: ${WORKDSH_BOOTSTRAP_ADMIN_PASSWORD:?请先在 .env 中设置 WORKDSH_BOOTSTRAP_ADMIN_PASSWORD（至少 12 位）}
+  WORKDSH_ORGANIZATION_NAME: ${WORKDSH_ORGANIZATION_NAME:-WorkDSH 企业}
+  WORKDSH_SECRETS_ENCRYPTION_KEY: ${WORKDSH_SECRETS_ENCRYPTION_KEY:?请先在 .env 中设置 WORKDSH_SECRETS_ENCRYPTION_KEY（32 字节随机密钥的 Base64）}
+  WORKDSH_SECRETS_SERVICE_KEY: ${WORKDSH_SECRETS_SERVICE_KEY:?请先在 .env 中设置 WORKDSH_SECRETS_SERVICE_KEY}
+
+services:
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/docker/AdminBuild.Dockerfile
+      args:
+        JAVA_BUILD_IMAGE: ${JAVA_BUILD_IMAGE:-maven:3.9-eclipse-temurin-17}
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
+        JAVA_IMAGE: ${JAVA_IMAGE:-eclipse-temurin:17-jre}
+    image: ${WORKDSH_ADMIN_IMAGE:-workdsh-admin:local}
+    ports:
+      # 默认仅绑定回环地址；需要局域网访问时设置 WORKDSH_ADMIN_BIND_ADDRESS=0.0.0.0。
+      - "${WORKDSH_ADMIN_BIND_ADDRESS:-127.0.0.1}:${WORKDSH_ADMIN_PORT:-18890}:18890"
+    environment: *admin-environment
+    volumes:
+      - workdsh-state:/state/data
+    restart: unless-stopped
+
+volumes:
+  workdsh-state:
