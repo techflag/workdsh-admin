@@ -1,0 +1,20 @@
+# 构建上下文只保留编译所需内容；镜像内不会包含凭据或本地数据。
+.git
+.github
+assets
+docs
+scripts
+deploy/postgres
+server/target
+server/data
+web/node_modules
+web/dist
+.test-runtime
+.artifacts
+**/__pycache__
+*.py[cod]
+.DS_Store
+.env
+.env.*
+!.env.example
+README.md
