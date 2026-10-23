@@ -45,6 +45,23 @@ npm run dev
 
 后台私密存储需要 `WORKDSH_SECRETS_ENCRYPTION_KEY`（32 字节随机密钥的 Base64）和服务器间 `WORKDSH_SECRETS_SERVICE_KEY`。凭据在包外管理，不下发浏览器。登录只使用实际成员密码，没有简单测试账号替换逻辑。
 
+## Docker Compose 快速启动
+
+需要 Docker 与 Compose v2。复制 `.env.example` 为 `.env` 并替换其中的占位凭据（管理员邮箱、至少 12 位密码、两个密钥），然后启动默认 H2 栈：
+
+```sh
+cp .env.example .env
+docker compose up --build -d
+```
+
+管理网页访问 `http://127.0.0.1:18890/`，数据保存在命名卷 `workdsh-state`。企业式 PostgreSQL 验收叠加 override：
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
+```
+
+首次初始化会创建最小权限角色 `workdsh_app` 并应用当前迁移链；`workdsh-pgdata` 卷清空后才会重新初始化。compose 默认仅绑定 `127.0.0.1` 且不终止 TLS，不能直接作为公网入口；生产环境应固定基础镜像 digest。完整参数与注意事项见 [deploy/docker/README.md](deploy/docker/README.md)。
+
 ## 公司内部模型 API
 
 管理员在「企业模型 API」配置多个接口：上游 HTTPS 地址、供应商 API Key、OpenAI Chat Completions 或 Anthropic Messages 协议、启用状态及允许的模型目录；另设置至少 32 位的内部访问 Key。供应商密钥加密保存、仅供服务器请求上游；管理员主动查看已保存 Key 使用 no-store 响应并记录审计。
